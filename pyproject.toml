@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carapace"
+version = "0.2.0"
+description = "Carapace agent-first CLI toolkit with YAML HATEOAS output"
+requires-python = ">=3.9"
+dependencies = [
+    "networkx>=3.2.1",
+    "PyYAML>=6.0.2",
+    "jsonschema>=4.22.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.2",
+]
+
+[project.scripts]
+carapace = "carapace.cli:main"
+carapace-cycle-time = "carapace.cycle_time:main"
+phase-validator = "carapace.validator.cli:main"
+phase-issue-bootstrap = "carapace.bootstrap_phase_issue:main"
+reviewer-metrics = "carapace.reviewer_metrics:main"
+ci-metrics = "carapace.ci_metrics:main"
+task-timeline-metrics = "carapace.task_timeline:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+packages = ["carapace", "carapace.validator"]
+
+[tool.setuptools.package-data]
+"carapace.validator" = ["validator.yaml", "validator.yaml.example"]

@@ -1,0 +1,20 @@
+phase: 4
+labels:
+  molt: molt
+  tan: tan
+  needs_pr: needs-pr
+exempt_issues: [143, 62]
+check_tiers:
+  missing_molt_issue: hard
+  missing_tan_issue: hard
+  multiple_tan_issues: hard
+  multiple_molt_issues: hard
+  missing_needs_pr_issue: hard
+  missing_milestone: hard
+  missing_parent_dependency: hard
+  leaf_without_needs_pr: hard
+  molt_reachability: hard
+  tan_reachability: hard
+  molt_as_dependency: hard
+  missing_assignee: advisory
+  base_branch: hard
