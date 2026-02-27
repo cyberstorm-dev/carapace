@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import Any, Dict
 
-from . import composition_report, cycle_time, cycle_time_report, queue
+from . import composition_report, cycle_time, cycle_time_report, queue, pipeline_metrics
 from .hateoas import dump_yaml, envelope
 
 

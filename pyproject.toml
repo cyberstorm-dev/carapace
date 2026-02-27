@@ -26,6 +26,7 @@ phase-issue-bootstrap = "carapace.bootstrap_phase_issue:main"
 reviewer-metrics = "carapace.reviewer_metrics:main"
 ci-metrics = "carapace.ci_metrics:main"
 task-timeline-metrics = "carapace.task_timeline:main"
+pipeline-metrics = "carapace.pipeline_metrics:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
