@@ -6,35 +6,64 @@ from carapace.gt import GiteaClient, GiteaAPIError
 from carapace.worker.base import Worker, WorkerConfig
 from carapace.worker.pool import APIKeyPool, WorkerPool, APIKey
 from carapace.worker.host import HostWorker
+from carapace.validator.validation import build_graph
+from carapace.dag import get_active_subgraph, calculate_priority
 
 class Scheduler:
-    def __init__(self, client: GiteaClient, worker_pool: WorkerPool, milestone: str):
+    def __init__(self, client: GiteaClient, worker_pool: WorkerPool, milestone: str = None):
         self.client = client
         self.pool = worker_pool
         self.milestone = milestone
 
-    def compute_ready_queue(self) -> List[Dict[str, Any]]:
-        """
-        Finds issues that are open, have 'needs-pr', and all dependencies are closed.
-        """
-        issues = self.client.list_issues(state="open", labels="needs-pr", milestone=self.milestone)
-        ready_issues = []
-        
+    def fetch_dag(self) -> Any:
+        """Fetches all open issues and builds the global DiGraph."""
+        issues = self.client.list_issues(state="open")
         for issue in issues:
-            is_ready = True
             try:
                 deps = self.client._request("GET", f"issues/{issue['number']}/dependencies") or []
+                issue["dependencies"] = [d["number"] for d in deps]
             except GiteaAPIError:
-                deps = []
-            
-            for dep in deps:
-                if dep['state'] != "closed":
+                issue["dependencies"] = []
+        return build_graph(issues)
+
+    def compute_ready_queue(self) -> List[Dict[str, Any]]:
+        """
+        Finds issues that are open, have 'needs-pr', and are part of the active topological subgraph.
+        """
+        graph = self.fetch_dag()
+        active_nodes = get_active_subgraph(graph)
+        
+        if not active_nodes:
+            # Fallback for now: if no active subgraph, return nothing
+            return []
+
+        ready_issues = []
+        for node in active_nodes:
+            data = graph.nodes[node]
+            if "needs-pr" not in [l.lower() for l in data.get("labels", [])]:
+                continue
+                
+            # Check dependencies
+            is_ready = True
+            for dep in graph.predecessors(node):
+                dep_data = graph.nodes[dep]
+                # If dependency is in graph and NOT synthetic, it's an open issue.
+                if not dep_data.get("synthetic", False):
+                    # Tans are source markers; they don't block their descendants.
+                    dep_labels = [l.lower() for l in dep_data.get("labels", [])]
+                    if "tan" in dep_labels:
+                        continue
                     is_ready = False
                     break
-                    
+            
             if is_ready:
-                ready_issues.append(issue)
+                # Re-fetch full issue data for the result
+                ready_issues.append(self.client._request("GET", f"issues/{node}"))
                 
+        # Sort by priority (descendants in the active subgraph)
+        priority_scores = calculate_priority(graph, [i["number"] for i in ready_issues])
+        ready_issues = sorted(ready_issues, key=lambda x: (priority_scores.get(x["number"], 0), -x["number"]), reverse=True)
+        
         return ready_issues
 
     def auto_merge_approved_prs(self):

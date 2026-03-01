@@ -15,7 +15,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     queue_parser = sub.add_parser("queue", help="Get the scheduler ready queue")
-    queue_parser.add_argument("--milestone", required=True, type=int)
+    queue_parser.add_argument("--milestone", required=False, type=int)
     queue_parser.add_argument("--assignee", default=None)
     queue_parser.add_argument("--claim", action="store_true", help="Claim the top issue (marks in-progress)")
     queue_parser.add_argument("--repo", default=None)
