@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import Any, Dict
 
-from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics
+from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics, trigger
 from carapace.core import queue
 from carapace.hateoas import dump_yaml, envelope
 
@@ -14,6 +14,12 @@ from carapace.hateoas import dump_yaml, envelope
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Carapace CLI (YAML HATEOAS)")
     sub = parser.add_subparsers(dest="command")
+
+    trigger_parser = sub.add_parser("trigger", help="Examine repo state and emit agent triggers")
+    trigger_parser.add_argument("--repo", default=None)
+    trigger_parser.add_argument("--gitea-url", default="http://100.73.228.90:3000")
+    trigger_parser.add_argument("--token", default=None)
+    trigger_parser.add_argument("--redis-url", default=None)
 
     queue_parser = sub.add_parser("queue", help="Get the scheduler ready queue")
     queue_parser.add_argument("--milestone", required=False, type=int)
@@ -80,6 +86,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         print(dump_yaml(_root_payload()))
         return 0
+
+    if args.command == "trigger":
+        payload, code = trigger.run(args)
+        print(dump_yaml(payload))
+        return code
 
     if args.command == "queue":
         return queue.run(args)
