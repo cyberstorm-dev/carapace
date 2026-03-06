@@ -11,6 +11,7 @@ dependencies = [
     "networkx>=3.2.1",
     "PyYAML>=6.0.2",
     "jsonschema>=4.22.0",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,7 @@ task-timeline-metrics = "carapace.cli.task_timeline:main"
 pipeline-metrics = "carapace.cli.pipeline_metrics:main"
 gt = "carapace.cli.gt:main"
 carapace-bws = "carapace.cli.bws:main"
+carapace-redis-manager = "carapace.cli.redis_manager:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
