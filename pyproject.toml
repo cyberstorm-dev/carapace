@@ -34,7 +34,9 @@ carapace-redis-manager = "carapace.cli.redis_manager:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
-packages = ["carapace", "carapace.validator"]
+
+[tool.setuptools.packages.find]
+include = ["carapace*"]
 
 [tool.setuptools.package-data]
 "carapace.validator" = ["validator.yaml", "validator.yaml.example"]
