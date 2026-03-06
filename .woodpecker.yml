@@ -1,0 +1,27 @@
+steps:
+  test:
+    image: python:3.11-slim
+    commands:
+      # Install testing dependencies and the package itself
+      - pip install --no-cache-dir .[dev]
+      # Run the test suite
+      - python -m pytest tests/
+
+  publish-image:
+    image: woodpeckerci/plugin-docker-buildx
+    when:
+      - event: push
+        branch: main
+      - event: manual
+    settings:
+      repo: ghcr.io/cyberstorm-dev/carapace
+      dockerfile: Dockerfile
+      context: .
+      platforms: linux/amd64,linux/arm64
+      tags:
+        - latest
+        - "${CI_COMMIT_SHA:0:8}"
+      registry: ghcr.io
+      username: cyberstorm-dev
+      password:
+        from_secret: ghcr_token
