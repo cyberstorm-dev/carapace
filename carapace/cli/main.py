@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import Any, Dict
 
-from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics, trigger
+from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics, trigger, gatus
 from carapace.core import queue
 from carapace.hateoas import dump_yaml, envelope
 
@@ -14,6 +14,10 @@ from carapace.hateoas import dump_yaml, envelope
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Carapace CLI (YAML HATEOAS)")
     sub = parser.add_subparsers(dest="command")
+
+    gatus_parser = sub.add_parser("gatus-check", help="Check system health via Gatus API")
+    gatus_parser.add_argument("--gatus-url", default="http://100.123.0.63:3003", help="URL of the Gatus API")
+    gatus_parser.add_argument("--nodes", default="cyberstorm-citadel,cyberstorm-watchtower", help="Comma-separated list of nodes to check")
 
     trigger_parser = sub.add_parser("trigger", help="Examine repo state and emit agent triggers")
     trigger_parser.add_argument("--repo", default=None)
@@ -86,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         print(dump_yaml(_root_payload()))
         return 0
+
+    if args.command == "gatus-check":
+        payload, code = gatus.run(args)
+        print(dump_yaml(payload))
+        return code
 
     if args.command == "trigger":
         payload, code = trigger.run(args)
