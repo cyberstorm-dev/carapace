@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from carapace import justification_backfill as jb
+from carapace.cli import justification_backfill as jb
 
 
 class FakeResponse:

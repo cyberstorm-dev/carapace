@@ -8,8 +8,8 @@ import re
 import networkx as nx
 
 from carapace.hateoas import envelope, dump_yaml
-from carapace.gt import GiteaClient, GiteaAPIError
-from carapace.scheduler import Scheduler
+from carapace.cli.gt import GiteaClient, GiteaAPIError
+from carapace.core.scheduler import Scheduler
 from carapace.worker.pool import WorkerPool, APIKeyPool
 from carapace.worker.host import HostWorker
 from carapace.dag import get_active_subgraph, calculate_priority

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from carapace import cycle_time as cth
+from carapace.cli import cycle_time as cth
 
 
 def test_build_entry_computes_durations_and_formats_markdown():

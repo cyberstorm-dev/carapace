@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.dev/schemas/agent-task-timeline.schema.json",
+  "title": "Agent task timeline event v1.0.0",
+  "description": "Structured event emitted when an agent task completes, used for timeline and metrics generation.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent",
+    "task_type",
+    "task_ref",
+    "run_id",
+    "status",
+    "started_at",
+    "ended_at",
+    "duration_ms",
+    "retry_count",
+    "recorded_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0.0"],
+      "description": "Semantic version of this schema. Bump on breaking changes."
+    },
+    "agent": {
+      "type": "string",
+      "description": "Agent emitting the event (e.g., builder, reviewer)."
+    },
+    "task_type": {
+      "type": "string",
+      "enum": ["issue", "pull_request", "maintenance", "other"],
+      "description": "High-level classification of the task."
+    },
+    "task_ref": {
+      "type": "string",
+      "description": "Issue/PR identifier or human-readable task reference."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Unique identifier for this execution attempt."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "failed", "aborted"],
+      "description": "Terminal status of the run."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 timestamp when the task attempt started."
+    },
+    "ended_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 timestamp when the task attempt ended."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Execution duration in milliseconds (ended_at - started_at)."
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of retries attempted before this run (0 for first attempt)."
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the event was written to disk."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Optional free-form fields for diagnostics (CI job id, commit, etc.).",
+      "additionalProperties": {
+        "type": ["string", "number", "boolean", "null"]
+      }
+    }
+  },
+  "additionalProperties": false
+}

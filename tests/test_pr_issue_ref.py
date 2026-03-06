@@ -4,7 +4,7 @@ import os
 import pytest
 import yaml
 
-from carapace import pr_issue_ref
+from carapace.cli import pr_issue_ref
 
 
 def test_accepts_fixes_reference():

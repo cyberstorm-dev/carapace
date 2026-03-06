@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from carapace.task_timeline import (
+from carapace.cli.task_timeline import (
     SCHEMA_PATH,
     TaskEvent,
     TaskTimelineLogger,

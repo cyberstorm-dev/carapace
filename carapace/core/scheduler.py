@@ -2,7 +2,7 @@ import os
 import sys
 from typing import List, Dict, Any
 
-from carapace.gt import GiteaClient, GiteaAPIError
+from carapace.cli.gt import GiteaClient, GiteaAPIError
 from carapace.worker.base import Worker, WorkerConfig
 from carapace.worker.pool import APIKeyPool, WorkerPool, APIKey
 from carapace.worker.host import HostWorker

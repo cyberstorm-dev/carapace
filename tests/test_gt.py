@@ -1,7 +1,7 @@
 import json
 import unittest
 from unittest.mock import MagicMock, patch
-from carapace.gt import GiteaClient
+from carapace.cli.gt import GiteaClient
 
 
 class TestGT(unittest.TestCase):

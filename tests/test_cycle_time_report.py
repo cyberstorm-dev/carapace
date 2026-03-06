@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from carapace.cycle_time_report import (
+from carapace.cli.cycle_time_report import (
     IssueTimeline,
     build_report,
     format_markdown_report,

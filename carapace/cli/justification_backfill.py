@@ -31,7 +31,7 @@ import sys
 import urllib.request
 from typing import Any, Dict, List, Optional
 
-from carapace.bootstrap_phase_issue import (
+from carapace.cli.bootstrap_phase_issue import (
     GiteaClient,
     build_justification_comment,
     load_specs,

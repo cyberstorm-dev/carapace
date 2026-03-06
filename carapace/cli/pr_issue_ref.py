@@ -10,7 +10,7 @@ import sys
 from typing import Dict, Optional, Tuple
 from urllib import error, request
 
-from .hateoas import dump_yaml, envelope
+from carapace.hateoas import dump_yaml, envelope
 
 ISSUE_REF_PATTERN = re.compile(r"\b(Fixes|Closes)\s+#\d+", re.IGNORECASE)
 DEFAULT_GITEA_URL = "http://100.73.228.90:3000"

@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock
-from carapace.scheduler import Scheduler
+from carapace.core.scheduler import Scheduler
 from carapace.worker.pool import WorkerPool, APIKeyPool, APIKey
 from carapace.worker.base import WorkerResult
 

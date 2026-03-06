@@ -5,7 +5,7 @@ import sys
 from typing import Any, Dict, List, Optional
 from urllib import error, request
 
-from .hateoas import envelope, dump_yaml
+from carapace.hateoas import envelope, dump_yaml
 
 DEFAULT_GITEA_URL = "http://100.73.228.90:3000"
 
@@ -54,7 +54,7 @@ class GiteaClient:
              raise
 
     def list_issues(self, state: str = "open", assignee: Optional[str] = None, labels: Optional[str] = None, milestone: Optional[str] = None) -> List[Dict[str, Any]]:
-        params = [f"state={state}"]
+        params = [f"state={state}", "limit=100"]
         if assignee:
             params.append(f"assignee={assignee}")
         if labels:

@@ -1,4 +1,4 @@
-from carapace.ci_metrics import (
+from carapace.cli.ci_metrics import (
     PipelineContext,
     collect_context,
     format_metrics,

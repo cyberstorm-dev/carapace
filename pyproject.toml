@@ -19,14 +19,16 @@ dev = [
 ]
 
 [project.scripts]
-carapace = "carapace.cli:main"
-carapace-cycle-time = "carapace.cycle_time:main"
+carapace = "carapace.cli.main:main"
+carapace-cycle-time = "carapace.cli.cycle_time:main"
 phase-validator = "carapace.validator.cli:main"
-phase-issue-bootstrap = "carapace.bootstrap_phase_issue:main"
-reviewer-metrics = "carapace.reviewer_metrics:main"
-ci-metrics = "carapace.ci_metrics:main"
-task-timeline-metrics = "carapace.task_timeline:main"
-pipeline-metrics = "carapace.pipeline_metrics:main"
+phase-issue-bootstrap = "carapace.cli.bootstrap_phase_issue:main"
+reviewer-metrics = "carapace.cli.reviewer_metrics:main"
+ci-metrics = "carapace.cli.ci_metrics:main"
+task-timeline-metrics = "carapace.cli.task_timeline:main"
+pipeline-metrics = "carapace.cli.pipeline_metrics:main"
+gt = "carapace.cli.gt:main"
+carapace-bws = "carapace.cli.bws:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}

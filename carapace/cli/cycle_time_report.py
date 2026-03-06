@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .hateoas import dump_yaml, envelope
+from carapace.hateoas import dump_yaml, envelope
 
 
 @dataclass

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 from urllib import request
 
-from .hateoas import dump_yaml, envelope
+from carapace.hateoas import dump_yaml, envelope
 
 AGENT_USERNAMES = {"builder", "reviewer", "cloudops", "allenday"}
 ISO_FORMATS = ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z")

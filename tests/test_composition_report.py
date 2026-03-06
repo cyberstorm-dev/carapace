@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from carapace.composition_report import (
+from carapace.cli.composition_report import (
     AgentContribution,
     ComposedDeliverable,
     find_composed_prs,

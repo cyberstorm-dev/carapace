@@ -6,8 +6,9 @@ import argparse
 import sys
 from typing import Any, Dict
 
-from . import composition_report, cycle_time, cycle_time_report, queue, pipeline_metrics
-from .hateoas import dump_yaml, envelope
+from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics
+from carapace.core import queue
+from carapace.hateoas import dump_yaml, envelope
 
 
 def _build_parser() -> argparse.ArgumentParser:

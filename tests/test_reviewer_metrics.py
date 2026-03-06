@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from carapace import reviewer_metrics as rm
+from carapace.cli import reviewer_metrics as rm
 
 
 def test_compute_metrics_counts_and_timing():

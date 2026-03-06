@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from carapace.pipeline_metrics import (
+from carapace.cli.pipeline_metrics import (
     PullRequest,
     Review,
     render_prometheus,

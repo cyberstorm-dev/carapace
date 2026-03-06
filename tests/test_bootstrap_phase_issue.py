@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from carapace import bootstrap_phase_issue as bpi
+from carapace.cli import bootstrap_phase_issue as bpi
 
 
 class FakeResponse:

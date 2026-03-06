@@ -11,7 +11,7 @@ from typing import Iterable, List, Mapping, MutableMapping, Optional
 
 from jsonschema import Draft202012Validator
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_LOG_PATH = ROOT / "workspace" / "logs" / "agent-task-events.jsonl"
 SCHEMA_PATH = ROOT / "workspace" / "schemas" / "agent-task-timeline.schema.json"
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # 5MB
