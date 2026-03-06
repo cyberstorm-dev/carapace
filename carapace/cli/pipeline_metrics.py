@@ -7,17 +7,20 @@ metrics covering cycle time, throughput, quality, and health signals.
 from __future__ import annotations
 
 import argparse
+import http.server
 import json
 import os
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional
+from typing import Callable, Iterable, List, Mapping, Optional, Tuple
 
 DEFAULT_BUCKETS_SECONDS = [3600, 7200, 14400, 28800, 86400, 172800, 604800]
+REVIEW_BUCKETS = [1, 2, 3, 5, 10]
 
 
 @dataclass
@@ -95,6 +98,7 @@ def collect_pull_requests(
 
 @dataclass
 class PipelineSummary:
+    total_prs: int = 0
     merged: int = 0
     open: int = 0
     closed_unmerged: int = 0
@@ -105,15 +109,20 @@ class PipelineSummary:
     change_requests: int = 0
     approvals: int = 0
     re_reviews: int = 0
+    prs_with_multiple_reviews: int = 0
     rejection_rate: float = 0.0
+    failure_rate: float = 0.0
+    investigate_loop_rate: float = 0.0
     time_to_first_review: List[float] = None  # type: ignore[assignment]
     time_to_merge: List[float] = None  # type: ignore[assignment]
     review_to_merge: List[float] = None  # type: ignore[assignment]
+    reviews_per_pr: List[int] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self.time_to_first_review = [] if self.time_to_first_review is None else self.time_to_first_review
         self.time_to_merge = [] if self.time_to_merge is None else self.time_to_merge
         self.review_to_merge = [] if self.review_to_merge is None else self.review_to_merge
+        self.reviews_per_pr = [] if self.reviews_per_pr is None else self.reviews_per_pr
 
 
 def compute_summary(
@@ -127,6 +136,7 @@ def compute_summary(
     stale_delta = timedelta(days=stale_after_days)
 
     for pr in pull_requests:
+        summary.total_prs += 1
         total_reviews = len(pr.reviews)
         change_requests = sum(1 for r in pr.reviews if r.state.upper() == "REQUEST_CHANGES")
         approvals = sum(1 for r in pr.reviews if r.state.upper() == "APPROVED")
@@ -134,8 +144,10 @@ def compute_summary(
         summary.total_reviews += total_reviews
         summary.change_requests += change_requests
         summary.approvals += approvals
+        summary.reviews_per_pr.append(total_reviews)
         if total_reviews > 1:
             summary.re_reviews += total_reviews - 1
+            summary.prs_with_multiple_reviews += 1
 
         first_review_at = min((r.submitted_at for r in pr.reviews), default=None)
         if first_review_at:
@@ -162,6 +174,10 @@ def compute_summary(
         summary.rejection_rate = summary.change_requests / summary.total_reviews
     else:
         summary.rejection_rate = 0.0
+
+    completed = summary.merged + summary.closed_unmerged
+    summary.failure_rate = (summary.closed_unmerged / completed) if completed else 0.0
+    summary.investigate_loop_rate = (summary.prs_with_multiple_reviews / summary.total_prs) if summary.total_prs else 0.0
 
     return summary
 
@@ -216,8 +232,10 @@ def render_prometheus(
     now: Optional[datetime] = None,
     stale_after_days: int = 3,
     buckets: Optional[List[float]] = None,
+    review_buckets: Optional[List[float]] = None,
 ) -> str:
     buckets = buckets or DEFAULT_BUCKETS_SECONDS
+    review_buckets = review_buckets or REVIEW_BUCKETS
     now = now or datetime.now(timezone.utc)
     summary = compute_summary(pull_requests, now=now, stale_after_days=stale_after_days)
     lines: List[str] = []
@@ -251,6 +269,14 @@ def render_prometheus(
             summary.merged_last_7d,
             labels=base_labels,
             help_text="Merged pull requests in the last 7 days",
+        )
+    )
+    lines.extend(
+        _counter_line(
+            "pipeline_pr_merged_per_day",
+            round(summary.merged_last_7d / 7, 4),
+            labels=base_labels,
+            help_text="Merged PRs per-day (7d trailing average)",
         )
     )
 
@@ -311,6 +337,22 @@ def render_prometheus(
             help_text="Ratio of change-requests to total reviews",
         )
     )
+    lines.extend(
+        _counter_line(
+            "pipeline_pr_failure_rate",
+            round(summary.failure_rate, 4),
+            labels=base_labels,
+            help_text="PRs closed without merge divided by completed PRs",
+        )
+    )
+    lines.extend(
+        _counter_line(
+            "pipeline_pr_investigate_loop_rate",
+            round(summary.investigate_loop_rate, 4),
+            labels=base_labels,
+            help_text="Share of PRs that required multiple review cycles",
+        )
+    )
 
     if summary.time_to_first_review:
         lines.extend(
@@ -343,6 +385,16 @@ def render_prometheus(
             )
         )
 
+    lines.extend(
+        _histogram_lines(
+            name="pipeline_pr_reviews_per_pr",
+            help_text="Distribution of review counts per PR",
+            samples=summary.reviews_per_pr,
+            buckets=[float(b) for b in review_buckets],
+            labels=base_labels,
+        )
+    )
+
     return "\n".join(lines) + "\n"
 
 
@@ -360,6 +412,100 @@ def resolve_model_label(env: Mapping[str, str]) -> str:
     return env.get("CARAPACE_MODEL") or env.get("MODEL_ID") or "unknown"
 
 
+def generate_metrics_text(
+    *,
+    repo: str,
+    base_url: str,
+    token: str,
+    model: str,
+    now: Optional[datetime] = None,
+    stale_after_days: int = 3,
+    buckets: Optional[List[float]] = None,
+    review_buckets: Optional[List[float]] = None,
+    fetcher: Optional[Fetcher] = None,
+) -> str:
+    pull_requests = collect_pull_requests(
+        repo=repo,
+        base_url=base_url,
+        token=token,
+        fetcher=fetcher,
+    )
+    return render_prometheus(
+        pull_requests=pull_requests,
+        model=model,
+        now=now or datetime.now(timezone.utc),
+        stale_after_days=stale_after_days,
+        buckets=buckets or DEFAULT_BUCKETS_SECONDS,
+        review_buckets=review_buckets or REVIEW_BUCKETS,
+    )
+
+
+def start_http_server(
+    *,
+    repo: str,
+    base_url: str,
+    token: str,
+    model: str,
+    listen_host: str,
+    listen_port: int,
+    stale_after_days: int = 3,
+    buckets: Optional[List[float]] = None,
+    review_buckets: Optional[List[float]] = None,
+    fetcher: Optional[Fetcher] = None,
+) -> Tuple[http.server.ThreadingHTTPServer, threading.Thread]:
+    def _render() -> str:
+        return generate_metrics_text(
+            repo=repo,
+            base_url=base_url,
+            token=token,
+            model=model,
+            stale_after_days=stale_after_days,
+            buckets=buckets,
+            review_buckets=review_buckets,
+            fetcher=fetcher,
+        )
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # type: ignore[override]
+            if self.path not in {"/", "/metrics"}:
+                self.send_error(404, "Not Found")
+                return
+            try:
+                body = _render().encode()
+            except Exception as exc:  # pragma: no cover - defensive
+                self.send_error(500, f"Failed to render metrics: {exc}")
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args):  # noqa: ANN001, D401
+            """Silence noisy HTTP logs (Prometheus scrapes often)."""
+            return
+
+    server = http.server.ThreadingHTTPServer((listen_host, listen_port), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def serve_metrics(**kwargs) -> int:
+    server, thread = start_http_server(**kwargs)
+    addr, port = server.server_address
+    print(f"pipeline-metrics: serving on http://{addr}:{port}/metrics")
+    try:
+        thread.join()
+    except KeyboardInterrupt:
+        print("pipeline-metrics: shutting down")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Pipeline metrics Prometheus emitter")
     parser.add_argument("--repo", default="openclaw/nisto-home")
@@ -368,10 +514,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--model", help="Model label for metrics", default=None)
     parser.add_argument("--stale-after-days", type=int, default=3)
     parser.add_argument("--bucket", action="append", type=float, help="Histogram bucket (seconds)")
+    parser.add_argument("--review-bucket", action="append", type=float, help="Histogram bucket for review counts")
     parser.add_argument("--pushgateway-url", default=os.environ.get("PIPELINE_METRICS_PUSHGATEWAY"))
     parser.add_argument("--job", default=os.environ.get("PIPELINE_METRICS_JOB", "pipeline"))
     parser.add_argument("--instance", default=os.environ.get("PIPELINE_METRICS_INSTANCE"))
     parser.add_argument("--basic-auth", default=os.environ.get("PIPELINE_METRICS_BASIC_AUTH"))
+    parser.add_argument("--listen-host", default=os.environ.get("PIPELINE_METRICS_LISTEN_HOST"))
+    parser.add_argument("--listen-port", type=int, default=None)
+    parser.add_argument("--serve", action="store_true", help="Run an HTTP server instead of pushing")
     parser.add_argument("--dry-run", action="store_true", help="Print metrics without pushing")
     args = parser.parse_args(argv)
 
@@ -380,17 +530,30 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     model_label = args.model or resolve_model_label(os.environ)
 
-    pull_requests = collect_pull_requests(
+    if args.serve:
+        listen_host = args.listen_host or "0.0.0.0"
+        listen_port = args.listen_port or 9100
+        return serve_metrics(
+            repo=args.repo,
+            base_url=args.gitea_url,
+            token=args.token,
+            model=model_label,
+            listen_host=listen_host,
+            listen_port=listen_port,
+            stale_after_days=args.stale_after_days,
+            buckets=args.bucket or DEFAULT_BUCKETS_SECONDS,
+            review_buckets=args.review_bucket or REVIEW_BUCKETS,
+        )
+
+    metrics_text = generate_metrics_text(
         repo=args.repo,
         base_url=args.gitea_url,
         token=args.token,
-    )
-    metrics_text = render_prometheus(
-        pull_requests=pull_requests,
         model=model_label,
         now=datetime.now(timezone.utc),
         stale_after_days=args.stale_after_days,
         buckets=args.bucket or DEFAULT_BUCKETS_SECONDS,
+        review_buckets=args.review_bucket or REVIEW_BUCKETS,
     )
 
     push_url = args.pushgateway_url
@@ -422,6 +585,10 @@ __all__ = [
     "render_prometheus",
     "resolve_model_label",
     "DEFAULT_BUCKETS_SECONDS",
+    "REVIEW_BUCKETS",
+    "generate_metrics_text",
+    "start_http_server",
+    "serve_metrics",
     "main",
 ]
 

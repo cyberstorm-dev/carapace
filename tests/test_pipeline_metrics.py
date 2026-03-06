@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from urllib.request import urlopen
 
 from carapace.cli.pipeline_metrics import (
     PullRequest,
     Review,
     render_prometheus,
+    start_http_server,
 )
 
 
@@ -55,6 +57,7 @@ def test_render_prometheus_emits_counts_histograms_and_health_signals():
         now=_dt(base, days=7),
         stale_after_days=3,
         buckets=[3600, 7200],
+        review_buckets=[1, 2, 3, 5],
     )
 
     assert 'pipeline_pr_total{model="gpt-4o",state="merged"} 2' in metrics_text
@@ -62,9 +65,56 @@ def test_render_prometheus_emits_counts_histograms_and_health_signals():
     assert 'pipeline_pr_reviewer_skipped_total{model="gpt-4o"} 1' in metrics_text
     assert 'pipeline_pr_stale_open_total{model="gpt-4o"} 2' in metrics_text
     assert 'pipeline_pr_rejection_rate{model="gpt-4o"} 0.3333' in metrics_text
+    assert 'pipeline_pr_failure_rate{model="gpt-4o"} 0.0' in metrics_text
+    assert 'pipeline_pr_investigate_loop_rate{model="gpt-4o"} 0.25' in metrics_text
 
     # Histograms
     assert 'pipeline_pr_time_to_first_review_seconds_bucket{le="3600",model="gpt-4o"} 2' in metrics_text
     assert 'pipeline_pr_time_to_merge_seconds_bucket{le="3600",model="gpt-4o"} 1' in metrics_text
     assert 'pipeline_pr_time_to_merge_seconds_sum{model="gpt-4o"} 9000.0' in metrics_text
     assert 'pipeline_pr_review_to_merge_seconds_bucket{le="7200",model="gpt-4o"} 1' in metrics_text
+    assert 'pipeline_pr_reviews_per_pr_bucket{le="1",model="gpt-4o"} 3' in metrics_text
+    assert 'pipeline_pr_reviews_per_pr_bucket{le="5",model="gpt-4o"} 4' in metrics_text
+
+
+def test_http_server_serves_prometheus_payload():
+    base = datetime(2024, 2, 1, tzinfo=timezone.utc)
+
+    pulls_payload = [
+        {
+            "number": 7,
+            "state": "closed",
+            "created_at": base.isoformat(),
+            "merged_at": _dt(base, hours=1).isoformat(),
+        }
+    ]
+    reviews_payload = [
+        {"state": "APPROVED", "submitted_at": _dt(base, minutes=45).isoformat()},
+    ]
+
+    def fake_fetcher(url: str):
+        if "pulls?" in url:
+            return pulls_payload
+        if url.endswith("/reviews"):
+            return reviews_payload
+        raise AssertionError(f"Unexpected URL {url}")
+
+    server, thread = start_http_server(
+        repo="openclaw/nisto-home",
+        base_url="http://example.test",
+        token="token",
+        model="mixtral",
+        listen_host="127.0.0.1",
+        listen_port=0,
+        fetcher=fake_fetcher,
+    )
+
+    try:
+        port = server.server_address[1]
+        with urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as resp:
+            body = resp.read().decode()
+        assert 'pipeline_pr_total{model="mixtral",state="merged"} 1' in body
+        assert 'pipeline_pr_time_to_merge_seconds_bucket{le="604800",model="mixtral"} 1' in body
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
