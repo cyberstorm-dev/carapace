@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import Any, Dict
 
-from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics, trigger, gatus
+from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics, trigger, gatus, fleet
 from carapace.core import queue
 from carapace.hateoas import dump_yaml, envelope
 
@@ -14,6 +14,22 @@ from carapace.hateoas import dump_yaml, envelope
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Carapace CLI (YAML HATEOAS)")
     sub = parser.add_subparsers(dest="command")
+
+    fleet_parser = sub.add_parser("fleet", help="Manage and observe the infrastructure fleet")
+    fleet_sub = fleet_parser.add_subparsers(dest="subcommand", required=True)
+    
+    fleet_status = fleet_sub.add_parser("status", help="Show fleet inventory and status")
+    fleet_status.add_argument("--registry-path", help="Path to infra-registry repo")
+    fleet_status.add_argument("--node", help="Filter by node name")
+
+    fleet_health = fleet_sub.add_parser("health", help="Show real-time fleet health")
+    fleet_health.add_argument("--registry-path", help="Path to infra-registry repo")
+    fleet_health.add_argument("--gatus-url", help="URL of Gatus API")
+    fleet_health.add_argument("--node", help="Filter by node name")
+
+    fleet_diagram = fleet_sub.add_parser("diagram", help="Generate fleet infrastructure diagram")
+    fleet_diagram.add_argument("--registry-path", help="Path to infra-registry repo")
+    fleet_diagram.add_argument("--group", help="Filter by group")
 
     gatus_parser = sub.add_parser("gatus-check", help="Check system health via Gatus API")
     gatus_parser.add_argument("--gatus-url", default="http://100.123.0.63:3003", help="URL of the Gatus API")
@@ -93,6 +109,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "gatus-check":
         payload, code = gatus.run(args)
+        print(dump_yaml(payload))
+        return code
+
+    if args.command == "fleet":
+        payload, code = fleet.run(args)
         print(dump_yaml(payload))
         return code
 
