@@ -29,6 +29,52 @@ def run(args: argparse.Namespace) -> int:
         dummy_pool = WorkerPool(HostWorker(), APIKeyPool([]), max_parallel=1)
         scheduler = Scheduler(client, dummy_pool)
         
+        if getattr(args, "redis_url", None):
+            import redis
+            try:
+                r = redis.from_url(args.redis_url, decode_responses=True)
+                queue_key = f"carapace:queue:{repo}"
+                items = r.zrevrange(queue_key, 0, -1, withscores=True)
+                
+                if not items:
+                    print(dump_yaml(envelope(
+                        command="carapace queue --redis-url",
+                        ok=True,
+                        result={"status": "empty", "message": "Redis queue is empty."}
+                    )))
+                    return 0
+
+                ready_issues = []
+                for issue_id_str, score in items:
+                    issue_id = int(issue_id_str)
+                    try:
+                        issue_data = client._request("GET", f"issues/{issue_id}")
+                        ready_issues.append({
+                            "number": issue_data["number"],
+                            "title": issue_data["title"],
+                            "priority_score": score,
+                            "assignees": [a["login"] for a in (issue_data.get("assignees") or [])]
+                        })
+                    except Exception:
+                        ready_issues.append({
+                            "number": issue_id,
+                            "title": "Unknown (failed to fetch)",
+                            "priority_score": score,
+                            "assignees": []
+                        })
+                
+                result = {"ready_issues": ready_issues}
+                print(dump_yaml(envelope(command="carapace queue --redis-url", ok=True, result=result)))
+                return 0
+                
+            except Exception as e:
+                print(dump_yaml(envelope(
+                    command="carapace queue --redis-url",
+                    ok=False,
+                    error={"message": f"Failed to read from Redis: {e}"}
+                )))
+                return 1
+
         # --- STATE MACHINE TIER 1: ACTIVE PRs ---
         if getattr(args, "claim", False) and args.assignee:
             open_prs = client._request("GET", "pulls?state=open") or []
