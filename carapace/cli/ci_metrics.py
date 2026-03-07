@@ -193,6 +193,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     metrics_body = format_metrics(ctx)
 
     push_url = args.pushgateway_url
+    if not push_url:
+        pg_host = env.get("CI_PROM_PUSHGATEWAY_HOST")
+        pg_port = env.get("CI_PROM_PUSHGATEWAY_PORT", "9091")
+        if pg_host:
+            push_url = f"http://{pg_host}:{pg_port}"
+
     if args.instance:
         push_url = f"{push_url}/metrics/job/{urllib.parse.quote(args.job)}/instance/{urllib.parse.quote(args.instance)}" if push_url else None
     elif push_url:

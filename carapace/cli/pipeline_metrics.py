@@ -557,6 +557,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     push_url = args.pushgateway_url
+    if not push_url:
+        pg_host = os.environ.get("PIPELINE_METRICS_PUSHGATEWAY_HOST")
+        pg_port = os.environ.get("PIPELINE_METRICS_PUSHGATEWAY_PORT", "9091")
+        if pg_host:
+            push_url = f"http://{pg_host}:{pg_port}"
+
     if push_url and args.instance:
         push_url = f"{push_url}/metrics/job/{urllib.parse.quote(args.job)}/instance/{urllib.parse.quote(args.instance)}"
     elif push_url:
