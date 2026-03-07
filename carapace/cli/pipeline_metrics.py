@@ -220,7 +220,7 @@ def _counter_line(name: str, value: float, labels: Mapping[str, str], help_text:
     lines = []
     if help_text:
         lines.append(f"# HELP {name} {help_text}")
-    lines.append(f"# TYPE {name} gauge")
+        lines.append(f"# TYPE {name} gauge")
     lines.append(f"{name}{{{_render_labels(labels)}}} {value}")
     return lines
 
