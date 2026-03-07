@@ -34,6 +34,11 @@ def _build_parser() -> argparse.ArgumentParser:
     gatus_parser = sub.add_parser("gatus-check", help="Check system health via Gatus API")
     gatus_parser.add_argument("--gatus-url", default="http://100.123.0.63:3003", help="URL of the Gatus API")
     gatus_parser.add_argument("--nodes", default="cyberstorm-citadel,cyberstorm-watchtower", help="Comma-separated list of nodes to check")
+    gatus_parser.add_argument(
+        "--skip-groups",
+        default="dns",
+        help="Comma-separated list of Gatus endpoint groups to ignore (e.g. dns,dev)",
+    )
 
     trigger_parser = sub.add_parser("trigger", help="Examine repo state and emit agent triggers")
     trigger_parser.add_argument("--repo", default=None)

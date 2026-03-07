@@ -7,7 +7,11 @@ from urllib import request, error
 from carapace.hateoas import envelope
 
 
-def run_gatus_check(gatus_url: str, required_nodes: List[str]) -> Dict[str, Any]:
+def run_gatus_check(
+    gatus_url: str,
+    required_nodes: List[str],
+    skip_groups: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     url = f"{gatus_url.rstrip('/')}/api/v1/endpoints/statuses"
     try:
         req = request.Request(url)
@@ -18,11 +22,15 @@ def run_gatus_check(gatus_url: str, required_nodes: List[str]) -> Dict[str, Any]
 
     failed_endpoints = []
     total_checked = 0
+    skip_groups = set(skip_groups or [])
 
     for endpoint in data:
         name = endpoint.get("name", "")
         group = endpoint.get("group", "")
         results = endpoint.get("results", [])
+
+        if group in skip_groups:
+            continue
         
         # Filter for relevant endpoints. We only care if the endpoint name or group contains our target nodes.
         # This prevents failing the build due to dev nodes (like infralink*) being down.
@@ -65,7 +73,8 @@ def run(args: argparse.Namespace) -> int:
     try:
         # Default nodes to check if none provided
         nodes = args.nodes.split(",") if args.nodes else ["cyberstorm-citadel", "cyberstorm-watchtower"]
-        result = run_gatus_check(args.gatus_url, nodes)
+        skip_groups = args.skip_groups.split(",") if getattr(args, "skip_groups", None) else ["dns"]
+        result = run_gatus_check(args.gatus_url, nodes, skip_groups=skip_groups)
         
         payload = envelope(
             command="carapace gatus-check",
@@ -86,4 +95,3 @@ def run(args: argparse.Namespace) -> int:
             fix="Check Gatus URL and network connectivity"
         )
         return payload, 1
-
