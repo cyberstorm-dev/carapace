@@ -579,7 +579,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"pipeline-metrics: pushed metrics to {push_url}")
     except urllib.error.URLError as exc:  # pragma: no cover - best-effort push
         print(f"pipeline-metrics: WARNING - failed to push metrics: {exc}", file=sys.stderr)
-        return 0
+        return 1
     return 0
 
 

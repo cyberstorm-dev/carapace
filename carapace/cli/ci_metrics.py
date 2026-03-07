@@ -214,7 +214,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"ci-metrics: pushed metrics to {push_url}")
     except urllib.error.URLError as exc:  # pragma: no cover
         print(f"ci-metrics: WARNING - failed to push metrics: {exc}", file=sys.stderr)
-        return 0
+        return 1
     return 0
 
 
