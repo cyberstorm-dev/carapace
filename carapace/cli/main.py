@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Any, Dict
 
@@ -53,7 +54,9 @@ def _build_parser() -> argparse.ArgumentParser:
     queue_parser.add_argument("--repo", default=None)
     queue_parser.add_argument("--gitea-url", default=None)
     queue_parser.add_argument("--token", default=None)
-    queue_parser.add_argument("--redis-url", default=None, help="Read queue from Redis instead of recalculating DAG")
+    queue_parser.add_argument("--redis-url", default=os.environ.get("REDIS_URL"), help="Use Redis for queue operations")
+    queue_parser.add_argument("--daemon", action="store_true", help="Continuously recompute and publish the ready queue")
+    queue_parser.add_argument("--poll-interval", type=int, default=int(os.environ.get("POLL_INTERVAL", "60")), help="Polling interval in seconds for daemon mode")
 
     cycle_parser = sub.add_parser("cycle-time", help="Record cycle-time entry")
     cycle_parser.add_argument("--issue", type=int, required=True)
