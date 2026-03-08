@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import Any, Dict
 
-from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics, trigger, gatus, fleet
+from . import composition_report, cycle_time, cycle_time_report, pipeline_metrics, trigger, gatus, fleet, bws
 from carapace.core import queue
 from carapace.hateoas import dump_yaml, envelope
 
@@ -82,6 +82,9 @@ def _build_parser() -> argparse.ArgumentParser:
     comp_parser.add_argument("--token", default=None)
     comp_parser.add_argument("--milestone", default=None)
     comp_parser.add_argument("--format", choices=["markdown", "json", "yaml"], default="markdown")
+
+    bws_parser = sub.add_parser("bws", help="HATEOAS wrapper around bws secret commands")
+    bws_parser.add_argument("bws_args", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -96,11 +99,13 @@ def _root_payload() -> Dict[str, Any]:
                 {"name": "cycle-time-report", "description": "Auto-generate cycle-time report from Gitea API"},
                 {"name": "pr-issue-ref", "description": "Validate PR body links to an issue"},
                 {"name": "composition-report", "description": "Cross-agent output composition reporter"},
+                {"name": "bws", "description": "HATEOAS secret operations wrapper"},
             ],
         },
         next_actions=[
             {"command": "carapace cycle-time --help", "description": "View cycle-time options"},
             {"command": "carapace pr-issue-ref", "description": "Run PR issue reference check"},
+            {"command": "carapace bws --help", "description": "View HATEOAS BWS command tree"},
         ],
     )
 
@@ -158,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
             *(["--milestone", args.milestone] if args.milestone else []),
             "--format", args.format,
         ])
+
+    if args.command == "bws":
+        payload = bws.run_cli(sys.argv[2:], command_prefix="carapace bws")
+        print(dump_yaml(payload))
+        return 0 if payload.get("ok") else 1
 
     parser.error("Unknown command")
     return 1

@@ -93,7 +93,8 @@ def delete_secret(project_id: str, key: str) -> bool:
 
 
 def _command_string(argv: List[str]) -> str:
-    return " ".join(["carapace bws"] + argv).strip()
+def _command_string(argv: List[str], command_prefix: str = "carapace-bws") -> str:
+    return " ".join([command_prefix] + argv).strip()
 
 
 def _root_result() -> Dict[str, Any]:
@@ -146,10 +147,10 @@ def _safe_error(message: Optional[str]) -> Optional[str]:
     return _protect_text(str(message))
 
 
-def run_cli(argv: List[str]) -> Dict[str, Any]:
+def run_cli(argv: List[str], command_prefix: str = "carapace-bws") -> Dict[str, Any]:
     if not argv or argv in (["-h"], ["--help"]):
         return envelope(
-            command="carapace bws",
+            command=command_prefix,
             ok=True,
             result=_root_result(),
             next_actions=_next_actions("root", None),
@@ -175,7 +176,7 @@ def run_cli(argv: List[str]) -> Dict[str, Any]:
     del_cmd.add_argument("project")
     del_cmd.add_argument("key")
 
-    command_str = _command_string(argv)
+        command_str = _command_string(argv, command_prefix)
     project_id = None
 
     try:
@@ -244,12 +245,12 @@ def run_cli(argv: List[str]) -> Dict[str, Any]:
             next_actions=_next_actions("error", project_id),
         )
 
-    return envelope(ok=False, command=command_str, error={"message": "Unknown command"}, next_actions=_next_actions("error", project_id))
+        return envelope(ok=False, command=command_str, error={"message": "Unknown command"}, next_actions=_next_actions("error", project_id))
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
-    response = run_cli(args)
+    response = run_cli(args, command_prefix="carapace-bws")
     print(dump_yaml(response))
     return 0 if response.get("ok") else 1
 
