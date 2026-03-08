@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock
+from carapace.issue_ref import IssueRef
 from carapace.core.scheduler import Scheduler
 from carapace.worker.pool import WorkerPool, APIKeyPool, APIKey
 from carapace.worker.base import WorkerResult
@@ -29,12 +30,21 @@ class TestScheduler(unittest.TestCase):
             {"number": 3, "title": "[TERMINAL] Phase 4 End", "labels": [{"name": "molt"}]},
             {"number": 4, "title": "Other Stuff", "labels": [{"name": "needs-pr"}]}
         ]
+
+        def mock_dependencies(issue_number, repo=None):
+            if issue_number == 1:
+                return []
+            if issue_number == 2:
+                return [IssueRef("test/repo", 1)]
+            if issue_number == 3:
+                return [IssueRef("test/repo", 2)]
+            if issue_number == 4:
+                return []
+            return []
+
+        self.client_mock.list_dependencies.side_effect = mock_dependencies
         
         def mock_request(method, path, data=None, **kwargs):
-            if "issues/1/dependencies" in path: return []
-            if "issues/2/dependencies" in path: return [{"number": 1, "state": "closed"}]
-            if "issues/3/dependencies" in path: return [{"number": 2, "state": "open"}]
-            if "issues/4/dependencies" in path: return []
             if "issues/1" in path: return {"number": 1, "title": "[TAN] Phase 4 Start"}
             if "issues/2" in path: return {"number": 2, "title": "Real Work"}
             if "issues/3" in path: return {"number": 3, "title": "[TERMINAL] Phase 4 End"}

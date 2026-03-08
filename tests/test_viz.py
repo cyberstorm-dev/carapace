@@ -197,8 +197,8 @@ def test_mermaid_output(monkeypatch, sample_config):
     assert "classDef molt fill:#3b82f6" in output
 
     lines = output.splitlines()
-    assert any("i1 --> i2" in line for line in lines)
-    assert any("i2 --> i3" in line for line in lines)
-    assert any('class i2 closed' in line for line in lines)
-    assert any('class i3 molt' in line for line in lines)
-    assert any('class i1 tan' in line for line in lines)
+    assert any("io_r_1 --> io_r_2" in line for line in lines)
+    assert any("io_r_2 --> io_r_3" in line for line in lines)
+    assert any('class io_r_2 closed' in line for line in lines)
+    assert any('class io_r_3 molt' in line for line in lines)
+    assert any('class io_r_1 tan' in line for line in lines)
