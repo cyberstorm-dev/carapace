@@ -15,6 +15,17 @@ This repository is agent-first. All outputs should be machine-parseable and enve
 - Optional tests deps:
   - `python -m pip install -e '.[dev]'`
 
+### One-shot bootstrap (recommended)
+```bash
+cd /Users/openclaw/.openclaw/agents/cloudops/carapace
+source /Users/openclaw/.openclaw/venv/bin/activate
+export CARAPACE_BWS_TOKEN="${BWS_TOKEN}"
+export CARAPACE_BWS_PROJECT_ID="<project-uuid>"
+export CARAPACE_BWS_BINARY="$(/usr/bin/which bws)"
+alias bws='carapace-bws'
+carapace-bws list
+```
+
 ## BWS wrapper (important)
 - Primary command: `carapace-bws`
 - Recommended alias: `alias bws='carapace-bws'`
