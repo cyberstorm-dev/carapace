@@ -63,7 +63,23 @@ class GiteaClient:
             params.append(f"milestone={milestone}")
         
         path = f"issues?{'&'.join(params)}"
-        return self._request("GET", path)
+        issues = self._request("GET", path)
+        if assignee is None:
+            return issues
+
+        def _assignee_login(issue: Dict[str, Any]) -> Optional[str]:
+            issue_assignee = issue.get("assignee")
+            if isinstance(issue_assignee, dict):
+                return issue_assignee.get("login")
+            if isinstance(issue_assignee, str):
+                return issue_assignee
+            return None
+
+        return [
+            issue
+            for issue in issues
+            if _assignee_login(issue) == assignee
+        ]
 
     def add_dependency(self, issue_index: int, dep_index: int):
         # Check if already exists to prevent Gitea 500/duplicate errors

@@ -52,5 +52,29 @@ class TestGT(unittest.TestCase):
         payload = json.loads(last_call_req.data.decode("utf-8"))
         self.assertEqual(payload, {"index": 20, "owner": "owner", "repo": "repo"})
 
+    @patch("urllib.request.urlopen")
+    def test_list_issues_filters_by_assignee(self, mock_urlopen):
+        """List command should return only matching assignee even if API ignores filter param."""
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(
+            [
+                {"number": 1, "assignee": {"login": "builder"}},
+                {"number": 2, "assignee": None},
+                {"number": 3, "assignee": {"login": "other"}},
+            ]
+        ).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        mock_urlopen.return_value = mock_resp
+
+        issues = self.client.list_issues(state="open", assignee="builder")
+
+        self.assertEqual([issue["number"] for issue in issues], [1])
+        self.assertEqual(issues[0]["assignee"]["login"], "builder")
+
+        request = mock_urlopen.call_args_list[0][0][0]
+        self.assertIn("assignee=builder", request.full_url)
+
 if __name__ == "__main__":
     unittest.main()
