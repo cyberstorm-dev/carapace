@@ -22,7 +22,7 @@ Primary entrypoints (after the install above):
 - `phase-validator` (issue graph validator)
 - `phase-issue-bootstrap` (Phase 3 issue bootstrapper)
 - `carapace-bws` (BWS helper)
-- `carapace-redis-manager` (priority queue manager)
+- `carapace queue --daemon` (priority queue manager; also available as `carapace-redis-manager`)
 - `gt` (Gitea helper)
 - `ci-metrics`, `pipeline-metrics`, `task-timeline-metrics`, `reviewer-metrics`
 

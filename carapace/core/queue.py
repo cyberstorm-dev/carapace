@@ -1,9 +1,11 @@
 import argparse
-from typing import Dict, Any, List, Optional
+import logging
 import os
-import traceback
-import sys
 import re
+import sys
+import time
+import traceback
+from typing import Any, Dict, List, Optional
 
 import networkx as nx
 
@@ -16,27 +18,49 @@ from carapace.worker.host import HostWorker
 from carapace.dag import get_active_subgraph, calculate_priority
 from carapace.validator.cli import build_auth_headers, fetch_all_issues
 
+
 def run(args: argparse.Namespace) -> int:
     try:
         url = args.gitea_url or os.environ.get("GITEA_URL", "http://100.73.228.90:3000")
         token = args.token or os.environ.get("GITEA_TOKEN")
         repo = args.repo or os.environ.get("GITEA_REPO", "openclaw/nisto-home")
-        
+        redis_url = args.redis_url or os.environ.get("REDIS_URL")
+        poll_interval = getattr(args, "poll_interval", None) or int(os.environ.get("POLL_INTERVAL", "60"))
+
         if not token:
             print(dump_yaml(envelope(command="carapace queue", ok=False, error={"message": "Missing GITEA_TOKEN"})))
             return 1
-            
+
+        if getattr(args, "daemon", False):
+            if not redis_url:
+                print(dump_yaml(envelope(
+                    command="carapace queue",
+                    ok=False,
+                    error={"message": "Missing REDIS_URL for daemon mode"},
+                )))
+                return 1
+
+            try:
+                run_daemon(url, token, repo, redis_url, poll_interval)
+            except KeyboardInterrupt:
+                logging.info("Exiting queue daemon...")
+                return 0
+            except Exception as e:
+                logging.error("Queue daemon encountered an error: %s", e, exc_info=True)
+                return 1
+            return 0
+
         client = GiteaClient(url, token, repo)
         dummy_pool = WorkerPool(HostWorker(), APIKeyPool([]), max_parallel=1)
         scheduler = Scheduler(client, dummy_pool)
-        
-        if getattr(args, "redis_url", None):
+
+        if redis_url:
             import redis
             try:
-                r = redis.from_url(args.redis_url, decode_responses=True)
+                r = redis.from_url(redis_url, decode_responses=True)
                 queue_key = f"carapace:queue:{repo}"
                 items = r.zrevrange(queue_key, 0, -1, withscores=True)
-                
+
                 if not items:
                     print(dump_yaml(envelope(
                         command="carapace queue --redis-url",
@@ -63,11 +87,11 @@ def run(args: argparse.Namespace) -> int:
                             "priority_score": score,
                             "assignees": []
                         })
-                
+
                 result = {"ready_issues": ready_issues}
                 print(dump_yaml(envelope(command="carapace queue --redis-url", ok=True, result=result)))
                 return 0
-                
+
             except Exception as e:
                 print(dump_yaml(envelope(
                     command="carapace queue --redis-url",
@@ -113,7 +137,7 @@ def run(args: argparse.Namespace) -> int:
                 assignees = [a.get("login") for a in (issue_data.get("assignees") or [])]
                 if args.assignee in assignees:
                     my_in_progress.append(issue_data)
-            
+
         if getattr(args, "claim", False) and my_in_progress:
             ip_refs = [IssueRef(repo, int(i["number"])) for i in my_in_progress]
             ip_scores = calculate_priority(graph, ip_refs)
@@ -122,7 +146,7 @@ def run(args: argparse.Namespace) -> int:
                 key=lambda x: (ip_scores.get(IssueRef(repo, int(x["number"])), 0), -x["number"]),
                 reverse=True,
             )
-            
+
             top_issue = my_in_progress[0]
             result = {
                 "claimed_issue": {
@@ -143,7 +167,7 @@ def run(args: argparse.Namespace) -> int:
 
         # --- STATE MACHINE TIER 3: NEW WORK FROM DAG ---
         ready = scheduler.compute_ready_queue()
-        
+
         if args.assignee:
             filtered = []
             for i in ready:
@@ -181,8 +205,8 @@ def run(args: argparse.Namespace) -> int:
                 client.add_label(iid, 7) # in-progress
                 client.remove_label(iid, 5) # needs-pr
             except Exception:
-                pass 
-                
+                pass
+
             result = {
                 "claimed_issue": {
                     "number": iid,
@@ -197,14 +221,14 @@ def run(args: argparse.Namespace) -> int:
             result = {
                 "ready_issues": [
                     {
-                        "number": i["number"], 
-                        "title": i["title"], 
+                        "number": i["number"],
+                        "title": i["title"],
                         "priority_score": priority_scores.get(i["number"], 0),
                         "assignees": [a["login"] for a in (i.get("assignees") or [])]
                     } for i in ready
                 ]
             }
-        
+
         command_str = "carapace queue"
         if args.milestone:
             command_str += f" --milestone {args.milestone}"
@@ -216,3 +240,50 @@ def run(args: argparse.Namespace) -> int:
         payload = envelope(command="carapace queue", ok=False, error={"message": str(e), "traceback": err_msg}, next_actions=[])
         print(dump_yaml(payload))
         return 1
+
+
+def run_daemon(gitea_url: str, token: str, repo: str, redis_url: str, poll_interval: int) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    client = GiteaClient(gitea_url, token, repo)
+    worker_pool = WorkerPool(HostWorker(), APIKeyPool([]), max_parallel=1)
+    scheduler = Scheduler(client, worker_pool, milestone=None)
+
+    import redis
+    r = redis.from_url(redis_url, decode_responses=True)
+    queue_key = f"carapace:queue:{repo}"
+
+    logging.info("Starting queue daemon for %s", repo)
+    logging.info("Redis URL: %s", redis_url)
+    logging.info("Gitea URL: %s", gitea_url)
+    logging.info("Poll interval: %ss", poll_interval)
+
+    while True:
+        try:
+            ready_issues = scheduler.compute_ready_queue()
+
+            if not ready_issues:
+                logging.info("Ready queue is empty.")
+                r.delete(queue_key)
+            else:
+                logging.info("Found %d ready issues.", len(ready_issues))
+
+                zadd_args = {}
+                count = len(ready_issues)
+                for idx, issue in enumerate(ready_issues):
+                    issue_num = str(issue["number"])
+                    score = float(count - idx)
+                    zadd_args[issue_num] = score
+
+                pipe = r.pipeline()
+                pipe.delete(queue_key)
+                if zadd_args:
+                    pipe.zadd(queue_key, zadd_args)
+                pipe.execute()
+
+                logging.info("Updated Redis zset '%s' with items: %s", queue_key, list(zadd_args.keys()))
+
+        except Exception as e:
+            logging.error("Error during queue daemon update: %s", e, exc_info=True)
+
+        time.sleep(poll_interval)
