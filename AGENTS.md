@@ -20,10 +20,25 @@ This repository is agent-first. All outputs should be machine-parseable and enve
 source /path/to/carapace/examples/agent-bootstrap.sh
 ```
 Set these optional overrides before sourcing:
-- `CARAPACE_REPO_ROOT` (defaults to `/Users/openclaw/.openclaw/agents/cloudops/carapace`)
-- `CARAPACE_VENV` (defaults to `/Users/openclaw/.openclaw/venv/bin/activate`)
+- `CARAPACE_REPO_ROOT` (defaults to script parent directory)
+- `CARAPACE_VENV` (defaults to `$HOME/.openclaw/venv/bin/activate` if present)
 - `CARAPACE_BWS_TOKEN` / `CARAPACE_BWS_PROJECT_ID`
 - `CARAPACE_BWS_BINARY` (required only if `bws` isn’t discoverable on PATH)
+
+### Validation after bootstrap
+Run:
+
+```bash
+carapace-bws --help
+carapace-bws list
+```
+
+Expected:
+- first command prints a HATEOAS command tree under `carapace bws`
+- second command executes without parser errors and returns envelope JSON/YAML keys:
+  - `command`
+  - `ok`
+  - `result`
 
 ## BWS wrapper (important)
 - Primary command: `carapace-bws`

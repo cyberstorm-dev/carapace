@@ -13,9 +13,7 @@ REPO_ROOT="${CARAPACE_REPO_ROOT:-${SCRIPT_DIR}/..}"
 
 VENV_PATH="${CARAPACE_VENV:-}"
 if [[ -z "${VENV_PATH}" ]]; then
-  if [[ -n "${OPENCLOW_VENV:-}" && -f "${OPENCLOW_VENV}" ]]; then
-    VENV_PATH="${OPENCLOW_VENV}"
-  elif [[ -f "${HOME}/.openclaw/venv/bin/activate" ]]; then
+  if [[ -f "${HOME}/.openclaw/venv/bin/activate" ]]; then
     VENV_PATH="${HOME}/.openclaw/venv/bin/activate"
   elif [[ -f "/Users/openclaw/.openclaw/venv/bin/activate" ]]; then
     VENV_PATH="/Users/openclaw/.openclaw/venv/bin/activate"
@@ -24,7 +22,7 @@ fi
 
 if [[ -z "${VENV_PATH}" || ! -f "${VENV_PATH}" ]]; then
   echo "Virtualenv activation file not found: ${VENV_PATH:-<unset>}"
-  echo "Set CARAPACE_VENV (or OPENCLOW_VENV) to a valid venv path and retry."
+  echo "Set CARAPACE_VENV to a valid venv path and retry."
   return 1
 fi
 
