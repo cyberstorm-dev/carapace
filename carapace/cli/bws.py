@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -24,6 +25,16 @@ def resolve_project_id(value: str) -> str:
     if UUID_RE.match(value):
         return value
     raise ValueError(f"Project ID must be a UUID: {value}")
+
+
+def resolve_project_id_or_default(value: Optional[str]) -> str:
+    if value:
+        return resolve_project_id(value)
+    for key in ("CARAPACE_BWS_PROJECT_ID", "BWS_PROJECT_ID"):
+        candidate = os.environ.get(key)
+        if candidate:
+            return resolve_project_id(candidate)
+    raise ValueError("Project ID is required. Provide it as an argument or set CARAPACE_BWS_PROJECT_ID/BWS_PROJECT_ID.")
 
 
 MAX_FIELD_LENGTH = 120
@@ -160,20 +171,20 @@ def run_cli(argv: List[str], command_prefix: str = "carapace-bws") -> Dict[str, 
     sub = parser.add_subparsers(dest="command", required=True)
 
     list_cmd = sub.add_parser("list")
-    list_cmd.add_argument("project")
+    list_cmd.add_argument("project", nargs="?", default=None)
 
     get_cmd = sub.add_parser("get")
-    get_cmd.add_argument("project")
+    get_cmd.add_argument("project", nargs="?", default=None)
     get_cmd.add_argument("key")
 
     set_cmd = sub.add_parser("set")
-    set_cmd.add_argument("project")
+    set_cmd.add_argument("project", nargs="?", default=None)
     set_cmd.add_argument("key")
     set_cmd.add_argument("value")
     set_cmd.add_argument("--note", required=True)
 
     del_cmd = sub.add_parser("delete")
-    del_cmd.add_argument("project")
+    del_cmd.add_argument("project", nargs="?", default=None)
     del_cmd.add_argument("key")
 
         command_str = _command_string(argv, command_prefix)
@@ -181,7 +192,7 @@ def run_cli(argv: List[str], command_prefix: str = "carapace-bws") -> Dict[str, 
 
     try:
         args = parser.parse_args(argv)
-        project_id = resolve_project_id(args.project)
+        project_id = resolve_project_id_or_default(args.project)
 
         if args.command == "list":
             secrets = list_secrets(project_id)
