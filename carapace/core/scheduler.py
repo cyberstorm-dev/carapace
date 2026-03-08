@@ -1,8 +1,10 @@
 import os
 import sys
-from typing import List, Dict, Any
+from collections import deque
+from typing import Any, Dict, List
 
 from carapace.cli.gt import GiteaClient, GiteaAPIError
+from carapace.issue_ref import IssueRef
 from carapace.worker.base import Worker, WorkerConfig
 from carapace.worker.pool import APIKeyPool, WorkerPool, APIKey
 from carapace.worker.host import HostWorker
@@ -17,28 +19,72 @@ class Scheduler:
 
     def fetch_dag(self) -> Any:
         """Fetches all open issues and builds the global DiGraph."""
-        issues = self.client.list_issues(state="open")
-        for issue in issues:
+        primary_repo = self.client.repo_full_name
+        issues = self.client.list_issues(state="open", repo=primary_repo)
+        graph_issues: List[Dict[str, Any]] = list(issues)
+        for issue in graph_issues:
+            issue["repo"] = primary_repo
+
+        for issue in graph_issues:
+            issue["dependencies"] = self.client.list_dependencies(issue["number"], repo=primary_repo)
+
+        indexed_issues: Dict[IssueRef, Dict[str, Any]] = {
+            IssueRef(primary_repo, int(issue["number"])): issue for issue in graph_issues
+        }
+
+        seen = set(indexed_issues.keys())
+        queue = deque(
+            dependency
+            for issue in graph_issues
+            for dependency in issue.get("dependencies", [])
+            if isinstance(dependency, IssueRef) and dependency not in seen
+        )
+
+        while queue:
+            ref = queue.popleft()
+            if ref in seen:
+                continue
+            seen.add(ref)
             try:
-                deps = self.client._request("GET", f"issues/{issue['number']}/dependencies") or []
-                issue["dependencies"] = [d["number"] for d in deps]
+                dependency_issue = self.client.get_issue(ref.number, repo=ref.repo)
             except GiteaAPIError:
-                issue["dependencies"] = []
-        return build_graph(issues)
+                continue
+
+            if dependency_issue.get("state") != "open":
+                continue
+
+            dependency_issue["repo"] = ref.repo
+            dependency_issue["dependencies"] = self.client.list_dependencies(
+                ref.number, repo=ref.repo
+            )
+            indexed_issues[ref] = dependency_issue
+            for dep in dependency_issue.get("dependencies", []):
+                if dep not in seen:
+                    queue.append(dep)
+
+        issues = list(indexed_issues.values())
+        for issue in issues:
+            issue["dependencies"] = [
+                d for d in issue.get("dependencies", []) if isinstance(d, IssueRef)
+            ]
+        return build_graph(issues, default_repo=primary_repo)
 
     def compute_ready_queue(self) -> List[Dict[str, Any]]:
         """
         Finds issues that are open, have 'needs-pr', and are part of the active topological subgraph.
         """
         graph = self.fetch_dag()
+        primary_repo = self.client.repo_full_name
         active_nodes = get_active_subgraph(graph)
         
         if not active_nodes:
             # Fallback for now: if no active subgraph, return nothing
             return []
 
-        ready_issues = []
+        ready_issues: List[Dict[str, Any]] = []
         for node in active_nodes:
+            if node.repo != primary_repo:
+                continue
             data = graph.nodes[node]
             if "needs-pr" not in [l.lower() for l in data.get("labels", [])]:
                 continue
@@ -58,11 +104,18 @@ class Scheduler:
             
             if is_ready:
                 # Re-fetch full issue data for the result
-                ready_issues.append(self.client._request("GET", f"issues/{node}"))
+                issue_data = self.client._request("GET", f"issues/{node.number}", repo=node.repo)
+                ready_issues.append(issue_data)
                 
         # Sort by priority (descendants in the active subgraph)
-        priority_scores = calculate_priority(graph, [i["number"] for i in ready_issues])
-        ready_issues = sorted(ready_issues, key=lambda x: (priority_scores.get(x["number"], 0), -x["number"]), reverse=True)
+        priority_scores = calculate_priority(
+            graph, [IssueRef(primary_repo, int(issue["number"])) for issue in ready_issues]
+        )
+        ready_issues = sorted(
+            ready_issues,
+            key=lambda x: (priority_scores.get(IssueRef(primary_repo, int(x["number"])), 0), -x["number"]),
+            reverse=True,
+        )
         
         return ready_issues
 

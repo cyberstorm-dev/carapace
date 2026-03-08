@@ -30,7 +30,7 @@ class TestScheduler(unittest.TestCase):
             {"number": 4, "title": "Other Stuff", "labels": [{"name": "needs-pr"}]}
         ]
         
-        def mock_request(method, path, data=None):
+        def mock_request(method, path, data=None, **kwargs):
             if "issues/1/dependencies" in path: return []
             if "issues/2/dependencies" in path: return [{"number": 1, "state": "closed"}]
             if "issues/3/dependencies" in path: return [{"number": 2, "state": "open"}]
@@ -58,7 +58,7 @@ class TestScheduler(unittest.TestCase):
             {"number": 2, "pull_request": True}
         ]
         
-        def mock_request(method, path, data=None):
+        def mock_request(method, path, data=None, **kwargs):
             if "reviews" in path:
                 return [{"state": "APPROVED"}]
             

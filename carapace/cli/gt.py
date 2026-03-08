@@ -2,9 +2,10 @@ import argparse
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib import error, request
 
+from carapace.issue_ref import IssueRef, parse_dependency_refs, parse_issue_ref
 from carapace.hateoas import envelope, dump_yaml
 
 DEFAULT_GITEA_URL = "http://100.73.228.90:3000"
@@ -25,8 +26,15 @@ class GiteaClient:
         self.repo_full_name = repo
         self.owner, self.repo = repo.split("/")
 
-    def _request(self, method: str, path: str, data: Optional[Dict[str, Any]] = None) -> Any:
-        url = f"{self.url}/api/v1/repos/{self.repo_full_name}/{path}"
+    def _request(
+        self,
+        method: str,
+        path: str,
+        data: Optional[Dict[str, Any]] = None,
+        repo: Optional[str] = None,
+    ) -> Any:
+        repo_full_name = repo or self.repo_full_name
+        url = f"{self.url}/api/v1/repos/{repo_full_name}/{path}"
         headers = {
             "Authorization": f"token {self.token}",
             "Content-Type": "application/json",
@@ -51,9 +59,16 @@ class GiteaClient:
                 reason=e.reason
             )
         except Exception as e:
-             raise
+            raise
 
-    def list_issues(self, state: str = "open", assignee: Optional[str] = None, labels: Optional[str] = None, milestone: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_issues(
+        self,
+        state: str = "open",
+        assignee: Optional[str] = None,
+        labels: Optional[str] = None,
+        milestone: Optional[str] = None,
+        repo: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         params = [f"state={state}", "limit=100"]
         if assignee:
             params.append(f"assignee={assignee}")
@@ -63,7 +78,7 @@ class GiteaClient:
             params.append(f"milestone={milestone}")
         
         path = f"issues?{'&'.join(params)}"
-        issues = self._request("GET", path)
+        issues = self._request("GET", path, repo=repo)
         if assignee is None:
             return issues
 
@@ -81,31 +96,47 @@ class GiteaClient:
             if _assignee_login(issue) == assignee
         ]
 
-    def add_dependency(self, issue_index: int, dep_index: int):
+    def add_dependency(self, issue_index: int, dep_reference: Union[int, str, IssueRef]):
+        dependency = parse_issue_ref(dep_reference, default_repo=self.repo_full_name)
+        if dependency is None:
+            raise ValueError("Unable to parse dependency reference")
         # Check if already exists to prevent Gitea 500/duplicate errors
-        deps = self._request("GET", f"issues/{issue_index}/dependencies")
-        if any(d["number"] == dep_index for d in deps):
+        deps = self.list_dependencies(issue_index, repo=self.repo_full_name)
+        if dependency in deps:
             return {"message": "Dependency already exists"}
 
+        owner, repo = dependency.repo.split("/", 1)
         payload = {
-            "index": dep_index,
-            "owner": self.owner,
-            "repo": self.repo,
+            "index": dependency.number,
+            "owner": owner,
+            "repo": repo,
         }
-        return self._request("POST", f"issues/{issue_index}/dependencies", payload)
+        return self._request("POST", f"issues/{issue_index}/dependencies", payload, repo=self.repo_full_name)
 
-    def remove_dependency(self, issue_index: int, dep_index: int):
+    def remove_dependency(self, issue_index: int, dep_reference: Union[int, str, IssueRef]):
+        dependency = parse_issue_ref(dep_reference, default_repo=self.repo_full_name)
+        if dependency is None:
+            raise ValueError("Unable to parse dependency reference")
         # DELETE /dependencies requires the IssueMeta in the body
-        deps = self._request("GET", f"issues/{issue_index}/dependencies")
-        if not any(d["number"] == dep_index for d in deps):
-            raise RuntimeError(f"Dependency #{dep_index} not found on issue #{issue_index}")
-        
+        deps = self.list_dependencies(issue_index, repo=self.repo_full_name)
+        if dependency not in deps:
+            raise RuntimeError(f"Dependency #{dependency.number} not found on issue #{issue_index}")
+
+        owner, repo = dependency.repo.split("/", 1)
         payload = {
-            "index": dep_index,
-            "owner": self.owner,
-            "repo": self.repo,
+            "index": dependency.number,
+            "owner": owner,
+            "repo": repo,
         }
-        return self._request("DELETE", f"issues/{issue_index}/dependencies", payload)
+        return self._request("DELETE", f"issues/{issue_index}/dependencies", payload, repo=self.repo_full_name)
+
+    def list_dependencies(self, issue_index: int, repo: Optional[str] = None) -> List[IssueRef]:
+        repo_full_name = repo or self.repo_full_name
+        deps = self._request("GET", f"issues/{issue_index}/dependencies", repo=repo_full_name) or []
+        return parse_dependency_refs(deps, default_repo=repo_full_name)
+
+    def get_issue(self, issue_index: int, repo: Optional[str] = None) -> Dict[str, Any]:
+        return self._request("GET", f"issues/{issue_index}", repo=repo or self.repo_full_name)
 
     def add_label(self, issue_index: int, label_id: int):
         # Gitea POST to /labels adds to the existing set
@@ -136,7 +167,7 @@ def main():
     dep_parser = subparsers.add_parser("dep", help="Manage issue dependencies")
     dep_parser.add_argument("action", choices=["add", "rm"])
     dep_parser.add_argument("issue", type=int)
-    dep_parser.add_argument("dependency", type=int)
+    dep_parser.add_argument("dependency")
 
     # Issue labels
     label_parser = subparsers.add_parser("label", help="Manage issue labels")
@@ -153,8 +184,16 @@ def main():
                 "description": "Gitea Tool for Agentic Workflows",
                 "commands": [
                     {"name": "list", "description": "List issues with filtering", "usage": "gt list [--state open|closed|all] [--assignee user] [--labels l1,l2]"},
-                    {"name": "dep add", "description": "Add dependency to issue", "usage": "gt dep add <issue_index> <dep_index>"},
-                    {"name": "dep rm", "description": "Remove dependency from issue", "usage": "gt dep rm <issue_index> <dep_index>"},
+                    {
+                        "name": "dep add",
+                        "description": "Add dependency to issue",
+                        "usage": "gt dep add <issue_index> <dep_reference>",
+                    },
+                    {
+                        "name": "dep rm",
+                        "description": "Remove dependency from issue",
+                        "usage": "gt dep rm <issue_index> <dep_reference>",
+                    },
                     {"name": "label add", "description": "Add label to issue", "usage": "gt label add <issue_index> <label_id>"},
                 ]
             },

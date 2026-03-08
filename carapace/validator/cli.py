@@ -18,6 +18,7 @@ from .validation import (
     _milestone_id,
     validate_issues,
 )
+from carapace.issue_ref import parse_dependency_refs
 
 DEFAULT_GITEA_URL = "http://100.73.228.90:3000"
 PAGE_SIZE = 50
@@ -64,10 +65,10 @@ def _request_json(url: str, headers: Dict[str, str]) -> List[Dict[str, Any]]:
 
 def _fetch_dependencies(
     gitea_url: str, owner: str, name: str, headers: Dict[str, str], issue_number: int
-) -> List[int]:
+) -> List:
     url = f"{gitea_url.rstrip('/')}/api/v1/repos/{owner}/{name}/issues/{issue_number}/dependencies"
     deps = _request_json(url, headers)
-    return [int(dep.get("number")) for dep in deps]
+    return parse_dependency_refs(deps, default_repo=f"{owner}/{name}")
 
 
 def _phase_of_issue(issue: Dict[str, Any]) -> Optional[int]:
@@ -221,7 +222,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         for issue in phase_issues:
             issue["dependencies"] = _fetch_dependencies(args.gitea_url, owner, name, headers, issue["number"])
 
-    messages: List[ValidationMessage] = validate_issues(phase_issues, config, tan_next_phase=tan_next)
+    default_repo = args.repo or "local"
+    messages: List[ValidationMessage] = validate_issues(
+        phase_issues, config, tan_next_phase=tan_next, default_repo=default_repo
+    )
 
     # PR base branch check (hard gate)
     if not args.issues_file and args.repo:
