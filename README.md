@@ -32,6 +32,10 @@ Primary entrypoints (after the install above):
 It wraps the real `bws` binary, returns YAML HATEOAS envelopes, and proxies unknown
 commands through to the underlying `bws` executable when needed.
 
+For automatic agent setup, use:
+
+- [`examples/agent-bootstrap.sh`](/Users/allenday/src/carapace/examples/agent-bootstrap.sh)
+
 Recommended setup for low-friction agent sessions:
 
 ```bash

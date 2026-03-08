@@ -17,14 +17,13 @@ This repository is agent-first. All outputs should be machine-parseable and enve
 
 ### One-shot bootstrap (recommended)
 ```bash
-cd /Users/openclaw/.openclaw/agents/cloudops/carapace
-source /Users/openclaw/.openclaw/venv/bin/activate
-export CARAPACE_BWS_TOKEN="${BWS_TOKEN}"
-export CARAPACE_BWS_PROJECT_ID="<project-uuid>"
-export CARAPACE_BWS_BINARY="$(/usr/bin/which bws)"
-alias bws='carapace-bws'
-carapace-bws list
+source /path/to/carapace/examples/agent-bootstrap.sh
 ```
+Set these optional overrides before sourcing:
+- `CARAPACE_REPO_ROOT` (defaults to `/Users/openclaw/.openclaw/agents/cloudops/carapace`)
+- `CARAPACE_VENV` (defaults to `/Users/openclaw/.openclaw/venv/bin/activate`)
+- `CARAPACE_BWS_TOKEN` / `CARAPACE_BWS_PROJECT_ID`
+- `CARAPACE_BWS_BINARY` (required only if `bws` isn’t discoverable on PATH)
 
 ## BWS wrapper (important)
 - Primary command: `carapace-bws`
