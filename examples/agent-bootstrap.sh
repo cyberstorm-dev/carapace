@@ -44,9 +44,20 @@ if [[ -z "${CARAPACE_BWS_TOKEN:-}" ]]; then
   return 1
 fi
 
+PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python)"
+else
+  echo "Python not found on PATH."
+  echo "Install python or set PATH to include a python executable."
+  return 1
+fi
+
 source "${VENV_PATH}"
 cd "${REPO_ROOT}"
-python -m pip install -e .
+"${PYTHON_BIN}" -m pip install -e .
 
 if [[ -z "${CARAPACE_BWS_BINARY:-}" ]]; then
   if command -v bws >/dev/null 2>&1; then
