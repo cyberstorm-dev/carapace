@@ -8,12 +8,23 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   exit 1
 fi
 
-REPO_ROOT="${CARAPACE_REPO_ROOT:-/Users/openclaw/.openclaw/agents/cloudops/carapace}"
-VENV_PATH="${CARAPACE_VENV:-/Users/openclaw/.openclaw/venv/bin/activate}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${CARAPACE_REPO_ROOT:-${SCRIPT_DIR}/..}"
 
-if [[ ! -f "${VENV_PATH}" ]]; then
-  echo "Virtualenv activation file not found: ${VENV_PATH}"
-  echo "Set CARAPACE_VENV to the correct venv path and retry."
+VENV_PATH="${CARAPACE_VENV:-}"
+if [[ -z "${VENV_PATH}" ]]; then
+  if [[ -n "${OPENCLOW_VENV:-}" && -f "${OPENCLOW_VENV}" ]]; then
+    VENV_PATH="${OPENCLOW_VENV}"
+  elif [[ -f "${HOME}/.openclaw/venv/bin/activate" ]]; then
+    VENV_PATH="${HOME}/.openclaw/venv/bin/activate"
+  elif [[ -f "/Users/openclaw/.openclaw/venv/bin/activate" ]]; then
+    VENV_PATH="/Users/openclaw/.openclaw/venv/bin/activate"
+  fi
+fi
+
+if [[ -z "${VENV_PATH}" || ! -f "${VENV_PATH}" ]]; then
+  echo "Virtualenv activation file not found: ${VENV_PATH:-<unset>}"
+  echo "Set CARAPACE_VENV (or OPENCLOW_VENV) to a valid venv path and retry."
   return 1
 fi
 
@@ -52,4 +63,6 @@ alias bws='carapace-bws'
 export BWS_TOKEN="${CARAPACE_BWS_TOKEN}"
 
 echo "Carapace agent bootstrap complete."
-carapace-bws --help | sed -n '1,80p'
+echo "Validation:"
+echo "- carapace-bws --help"
+echo "- carapace-bws list"
