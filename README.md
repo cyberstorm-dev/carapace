@@ -34,7 +34,7 @@ commands through to the underlying `bws` executable when needed.
 
 For automatic agent setup, use:
 
-- [`examples/agent-bootstrap.sh`](/Users/allenday/src/carapace/examples/agent-bootstrap.sh)
+- [`examples/agent-bootstrap.md`](/Users/allenday/src/carapace/examples/agent-bootstrap.md)
 
 Recommended setup for low-friction agent sessions:
 

@@ -51,6 +51,8 @@ It validates:
 - HATEOAS `list` flow
 - passthrough `secret list` proxying against real `bws`
 
+See the one-screen operator guide: `examples/agent-bootstrap.md`.
+
 ## BWS wrapper (important)
 - Primary command: `carapace-bws`
 - Recommended alias: `alias bws='carapace-bws'`
