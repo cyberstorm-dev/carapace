@@ -1,5 +1,5 @@
-pipeline:
-  test:
+steps:
+  - name: test
     image: python:3.12-slim
     commands:
       - python -m pip install --upgrade pip
