@@ -44,7 +44,7 @@ def _extract_closes(body: str) -> List[int]:
     """Extract issue numbers from 'Closes #N' / 'Fixes #N' patterns."""
     if not body:
         return []
-    return [int(m) for m in re.findall(r'(?:closes|fixes|resolves)\s+#(\\d+)', body, re.IGNORECASE)]
+    return [int(m) for m in re.findall(r'(?:closes|fixes|resolves)\s+#(\d+)', body, re.IGNORECASE)]
 
 
 def _escape_mermaid_label(label: str) -> str:
@@ -288,7 +288,7 @@ def _render_text(
             body = pr.get("body", "") or ""
             import re as _re
 
-            linked = _re.findall(r'(?:closes|fixes|resolves)\s+#(\\d+)', body, _re.IGNORECASE)
+            linked = _re.findall(r'(?:closes|fixes|resolves)\s+#(\d+)', body, _re.IGNORECASE)
             linked_str = f" → closes {', '.join('#'+n for n in linked)}" if linked else ""
             base_warn = " ⚠️ WRONG BASE" if base != "dev" else ""
             lines.append(f"  PR #{num} [{head} → {base}{base_warn}] @{user}: {title}{linked_str}")
@@ -448,4 +448,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

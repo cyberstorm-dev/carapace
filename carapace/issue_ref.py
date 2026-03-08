@@ -61,7 +61,8 @@ def parse_issue_ref(value: Any, default_repo: str = "local") -> Optional[IssueRe
             return None
         if "#" in candidate:
             repo, raw = candidate.rsplit("#", 1)
-            return IssueRef(repo=repo.strip(), number=int(raw))
+            repo_name = repo.strip() or default_repo
+            return IssueRef(repo=repo_name, number=int(raw))
         return IssueRef(repo=default_repo, number=int(candidate))
 
     if isinstance(value, dict):
@@ -86,4 +87,3 @@ def parse_dependency_refs(dependencies: Any, default_repo: str = "local") -> Lis
         if ref is not None:
             out.append(ref)
     return out
-
