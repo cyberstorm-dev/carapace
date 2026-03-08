@@ -140,6 +140,12 @@ def test_prs_render_sorted(monkeypatch, sample_config):
     open_numbers = [int(line.split()[1][1:]) for line in lines[open_section + 1 :] if line.strip().startswith("PR #")]
     assert open_numbers[:2] == [3, 9]
 
+
+def test_extract_closes_handles_raw_digit_pattern(monkeypatch, sample_config):
+    assert viz._extract_closes("Closes #2 and closes #10") == [2, 10]
+    assert viz._extract_closes("Fixes #11") == [11]
+    assert viz._extract_closes("Resolves #12") == [12]
+
 def test_mermaid_output(monkeypatch, sample_config):
     issues = [
         {
@@ -191,8 +197,8 @@ def test_mermaid_output(monkeypatch, sample_config):
     assert "classDef molt fill:#3b82f6" in output
 
     lines = output.splitlines()
-    assert any("i1 --> i2" in line for line in lines)
-    assert any("i2 --> i3" in line for line in lines)
-    assert any('class i2 closed' in line for line in lines)
-    assert any('class i3 molt' in line for line in lines)
-    assert any('class i1 tan' in line for line in lines)
+    assert any("io_r_1 --> io_r_2" in line for line in lines)
+    assert any("io_r_2 --> io_r_3" in line for line in lines)
+    assert any('class io_r_2 closed' in line for line in lines)
+    assert any('class io_r_3 molt' in line for line in lines)
+    assert any('class io_r_1 tan' in line for line in lines)

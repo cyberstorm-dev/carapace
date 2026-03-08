@@ -8,6 +8,7 @@ import sys
 from typing import Any, Dict, List, Optional
 from urllib import error, parse, request
 
+from carapace.issue_ref import IssueRef, parse_issue_ref
 from .cli import (
     DEFAULT_GITEA_URL,
     PAGE_SIZE,
@@ -50,11 +51,15 @@ def _escape_mermaid_label(label: str) -> str:
     return label.replace("\"", "\\\"")
 
 
+def _node_display(node: IssueRef, local_repo: str) -> str:
+    return node.display(local_repo=local_repo)
+
+
 def _classes_for_node(
-    node: int,
+    node: IssueRef,
     *,
     graph,
-    issue_map: Dict[int, Dict[str, Any]],
+    issue_map: Dict[IssueRef, Dict[str, Any]],
     tan_label: str,
     molt_label: str,
 ) -> List[str]:
@@ -71,15 +76,21 @@ def _classes_for_node(
     return ["open"]
 
 
+def _node_id(node: IssueRef) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", f"{node.repo}_{node.number}")
+    return f"i{safe}"
+
+
 def _render_mermaid(
     *,
     phase: int,
     graph,
-    issue_map: Dict[int, Dict[str, Any]],
+    issue_map: Dict[IssueRef, Dict[str, Any]],
     pr_map: Dict[int, List[Dict[str, Any]]],
     open_pulls: List[Dict[str, Any]],
     tan_label: str,
     molt_label: str,
+    local_repo: str,
 ) -> str:
     lines = [f"%% Phase {phase} dependency graph", "graph LR"]
 
@@ -93,11 +104,10 @@ def _render_mermaid(
         "    end"
     ])
 
-    # Grouping logic
-    external_prev = []
-    external_next = []
-    current_phase = []
-    
+    external_prev: List[IssueRef] = []
+    external_next: List[IssueRef] = []
+    current_phase: List[IssueRef] = []
+
     for node in sorted(graph.nodes):
         issue = issue_map.get(node, {})
         node_phase = _phase_of_issue(issue)
@@ -110,14 +120,14 @@ def _render_mermaid(
         else:
             current_phase.append(node)
 
-    def write_nodes(node_list, lines):
-        for node in node_list:
-            issue = issue_map.get(node, {})
+    def write_nodes(node_list: List[IssueRef], lines: List[str]) -> None:
+        for issue_node in node_list:
+            issue = issue_map.get(issue_node, {})
             title = (issue.get("title") or "Unknown").strip()[:70]
             node_phase = _phase_of_issue(issue)
             phase_prefix = f" (P{node_phase})" if node_phase and node_phase != phase else ""
-            label = _escape_mermaid_label(f"#{node}{phase_prefix} {title}")
-            lines.append(f"    i{node}[\"{label}\"]")
+            label = _escape_mermaid_label(f"{_node_display(issue_node, local_repo)}{phase_prefix} {title}")
+            lines.append(f"    {_node_id(issue_node)}[\"{label}\"]")
 
     if external_prev:
         lines.append(f"    subgraph Previous_Phases")
@@ -146,15 +156,16 @@ def _render_mermaid(
 
     # Add Edges
     for src, dst in sorted(graph.edges()):
-        lines.append(f"    i{src} --> i{dst}")
+        lines.append(f"    {_node_id(src)} --> {_node_id(dst)}")
 
     # Link PRs to their closed issues (PR blocks the Issue from closing)
     for pr in open_pulls:
         pr_num = pr["number"]
         closes = _extract_closes(pr.get("body", "") or "")
         for issue_num in closes:
-            if issue_num in graph.nodes:
-                lines.append(f"    p{pr_num} -.-> i{issue_num}")
+            issue_ref = parse_issue_ref(issue_num, default_repo=local_repo)
+            if issue_ref and issue_ref in graph.nodes:
+                lines.append(f"    p{pr_num} -.-> {_node_id(issue_ref)}")
 
     lines.extend(
         [
@@ -169,7 +180,7 @@ def _render_mermaid(
         classes = _classes_for_node(
             node, graph=graph, issue_map=issue_map, tan_label=tan_label, molt_label=molt_label
         )
-        lines.append(f"    class i{node} {','.join(classes)}")
+        lines.append(f"    class {_node_id(node)} {','.join(classes)}")
 
     return "\n".join(lines)
 
@@ -178,16 +189,17 @@ def _render_text(
     *,
     phase: int,
     graph,
-    issue_map: Dict[int, Dict[str, Any]],
+    issue_map: Dict[IssueRef, Dict[str, Any]],
     pr_map: Dict[int, List[Dict[str, Any]]],
     open_pulls: List[Dict[str, Any]],
-    tan_nodes: List[int],
-    molt_nodes: List[int],
+    tan_nodes: List[IssueRef],
+    molt_nodes: List[IssueRef],
     tan_label: str,
     molt_label: str,
     needs_pr: str,
+    local_repo: str,
 ) -> str:
-    def node_label(n: int) -> str:
+    def node_label(n: IssueRef) -> str:
         labels = graph.nodes[n].get("labels", set())
         issue = issue_map.get(n, {})
         title = issue.get("title", "?")[:50]
@@ -205,14 +217,13 @@ def _render_text(
         elif needs_pr in labels:
             role = " [needs-pr]"
 
-        return f"#{n} {state_icon} {title}{role}{assignee}"
+        return f"{_node_display(n, local_repo)} {state_icon} {title}{role}{assignee}"
 
     lines = [f"Phase {phase} — DAG visualization", ""]
 
-    # Print by layer: tan (source) → work → molt (sink)
-    def _layers_from_sources(g) -> tuple[List[List[int]], List[int]]:
+    def _layers_from_sources(g) -> tuple[List[List[IssueRef]], List[IssueRef]]:
         visited = set()
-        layers: List[List[int]] = []
+        layers: List[List[IssueRef]] = []
         frontier = set(tan_nodes)
         while frontier:
             layer = sorted(frontier)
@@ -240,27 +251,29 @@ def _render_text(
         for n in layer:
             lines.append(f"  {node_label(n)}")
             # Show linked PRs
-            if n in pr_map:
-                for pr in sorted(pr_map[n], key=lambda p: int(p["number"])):
+            if _as_issue_number(n) in pr_map:
+                issue_num = _as_issue_number(n)
+                for pr in sorted(pr_map[issue_num], key=lambda p: int(p["number"])):
                     pr_state = "merged" if pr.get("merged") else pr.get("state", "?")
                     pr_icon = "🟣" if pr_state == "merged" else "🟢" if pr_state == "open" else "⚫"
                     lines.append(f"    📎 PR #{pr['number']} [{pr_icon} {pr_state}] {pr['title'][:40]}")
             # Show edges
             for succ in sorted(graph.successors(n)):
-                lines.append(f"    └→ #{succ}")
+                lines.append(f"    └→ {_node_display(succ, local_repo)}")
         lines.append("")
 
     if orphans:
         lines.append("── UNREACHABLE/ORPHAN ──")
         for n in orphans:
             lines.append(f"  {node_label(n)}")
-            if n in pr_map:
-                for pr in sorted(pr_map[n], key=lambda p: int(p["number"])):
+            if _as_issue_number(n) in pr_map:
+                issue_num = _as_issue_number(n)
+                for pr in sorted(pr_map[issue_num], key=lambda p: int(p["number"])):
                     pr_state = "merged" if pr.get("merged") else pr.get("state", "?")
                     pr_icon = "🟣" if pr_state == "merged" else "🟢" if pr_state == "open" else "⚫"
                     lines.append(f"    📎 PR #{pr['number']} [{pr_icon} {pr_state}] {pr['title'][:40]}")
             for succ in sorted(graph.successors(n)):
-                lines.append(f"    └→ #{succ}")
+                lines.append(f"    └→ {_node_display(succ, local_repo)}")
         lines.append("")
 
     # Open PRs
@@ -288,9 +301,12 @@ def _render_text(
     return "\n".join(lines)
 
 
+def _as_issue_number(node: IssueRef) -> Optional[int]:
+    return node.number
+
+
 def _render_link(mermaid_code: str) -> str:
     """Encode Mermaid code into a mermaid.ink URL."""
-    # Use urlsafe_b64encode and remove padding '=' as expected by some decoders
     encoded = base64.urlsafe_b64encode(mermaid_code.encode("utf-8")).decode("utf-8").rstrip("=")
     return f"https://mermaid.ink/img/{encoded}"
 
@@ -317,6 +333,7 @@ def viz_phase(
 ) -> str:
     config = load_config(config_path)
     owner, name = repo.split("/")
+    local_repo = f"{owner}/{name}"
     headers, _ = build_auth_headers(token)
     all_issues = fetch_all_issues(gitea_url, repo, headers)
     all_pulls = _fetch_pulls(gitea_url, owner, name, token)
@@ -338,7 +355,7 @@ def viz_phase(
     for issue in tan_next:
         issue["synthetic"] = True
 
-    graph = build_graph(phase_issues + tan_next)
+    graph = build_graph(phase_issues + tan_next, default_repo=local_repo)
 
     phase_numbers = {int(i["number"]) for i in phase_issues}
     pr_map: Dict[int, List[Dict[str, Any]]] = {}
@@ -348,18 +365,20 @@ def viz_phase(
             if issue_num in phase_numbers:
                 pr_map.setdefault(issue_num, []).append(pr)
 
-    issue_map: Dict[int, Dict[str, Any]] = {int(i["number"]): i for i in phase_issues + tan_next}
+    issue_map: Dict[IssueRef, Dict[str, Any]] = {
+        parse_issue_ref(i["number"], default_repo=local_repo): i for i in phase_issues + tan_next
+    }
 
     # Fetch titles for any dependency nodes not in the current phase or next tan
-    missing_titles = [n for n in graph.nodes if n not in issue_map]
+    missing_titles = [n for n in graph.nodes if n not in issue_map and n.repo == local_repo]
     if missing_titles:
-        for node_id in missing_titles:
+        for node in missing_titles:
             try:
-                url = f"{gitea_url.rstrip('/')}/api/v1/repos/{owner}/{name}/issues/{node_id}"
+                url = f"{gitea_url.rstrip('/')}/api/v1/repos/{owner}/{name}/issues/{node.number}"
                 req = request.Request(url, headers=headers)
                 with request.urlopen(req, timeout=10) as resp:
                     issue_data = json.loads(resp.read().decode())
-                    issue_map[node_id] = issue_data
+                    issue_map[node] = issue_data
             except Exception:
                 continue
 
@@ -377,6 +396,7 @@ def viz_phase(
             open_pulls=open_pulls,
             tan_label=tan_label,
             molt_label=molt_label,
+            local_repo=local_repo,
         )
         if output_format == "link":
             return _render_link(mermaid)
@@ -395,6 +415,7 @@ def viz_phase(
         tan_label=tan_label,
         molt_label=molt_label,
         needs_pr=needs_pr,
+        local_repo=local_repo,
     )
 
 

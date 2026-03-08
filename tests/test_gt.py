@@ -53,6 +53,32 @@ class TestGT(unittest.TestCase):
         self.assertEqual(payload, {"index": 20, "owner": "owner", "repo": "repo"})
 
     @patch("urllib.request.urlopen")
+    def test_dependency_reference_parses_cross_repo(self, mock_urlopen):
+        """Should accept owner/repo#number dependency references."""
+        mock_get = MagicMock()
+        mock_get.status = 200
+        mock_get.read.return_value = json.dumps([]).encode("utf-8")
+        mock_get.__enter__.return_value = mock_get
+
+        mock_post = MagicMock()
+        mock_post.status = 204
+        mock_post.read.return_value = b""
+        mock_post.__enter__.return_value = mock_post
+
+        mock_urlopen.side_effect = [mock_get, mock_post]
+
+        self.client.add_dependency(10, "acme/other#123")
+
+        post_request = mock_urlopen.call_args_list[-1][0][0]
+        self.assertEqual(
+            post_request.get_full_url(),
+            "http://localhost/api/v1/repos/owner/repo/issues/10/dependencies",
+        )
+        self.assertEqual(post_request.get_method(), "POST")
+        payload = json.loads(post_request.data.decode("utf-8"))
+        self.assertEqual(payload, {"index": 123, "owner": "acme", "repo": "other"})
+
+    @patch("urllib.request.urlopen")
     def test_list_issues_filters_by_assignee(self, mock_urlopen):
         """List command should return only matching assignee even if API ignores filter param."""
         mock_resp = MagicMock()

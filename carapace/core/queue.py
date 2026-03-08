@@ -9,6 +9,7 @@ import networkx as nx
 
 from carapace.hateoas import envelope, dump_yaml
 from carapace.cli.gt import GiteaClient, GiteaAPIError
+from carapace.issue_ref import IssueRef
 from carapace.core.scheduler import Scheduler
 from carapace.worker.pool import WorkerPool, APIKeyPool
 from carapace.worker.host import HostWorker
@@ -106,15 +107,21 @@ def run(args: argparse.Namespace) -> int:
         my_in_progress = []
         if args.assignee:
             for n in in_progress:
-                issue_data = client._request("GET", f"issues/{n}")
+                if not isinstance(n, IssueRef) or n.repo != repo:
+                    continue
+                issue_data = client._request("GET", f"issues/{n.number}")
                 assignees = [a.get("login") for a in (issue_data.get("assignees") or [])]
                 if args.assignee in assignees:
                     my_in_progress.append(issue_data)
             
         if getattr(args, "claim", False) and my_in_progress:
-            ip_numbers = [i["number"] for i in my_in_progress]
-            ip_scores = calculate_priority(graph, ip_numbers)
-            my_in_progress = sorted(my_in_progress, key=lambda x: (ip_scores.get(x["number"], 0), -x["number"]), reverse=True)
+            ip_refs = [IssueRef(repo, int(i["number"])) for i in my_in_progress]
+            ip_scores = calculate_priority(graph, ip_refs)
+            my_in_progress = sorted(
+                my_in_progress,
+                key=lambda x: (ip_scores.get(IssueRef(repo, int(x["number"])), 0), -x["number"]),
+                reverse=True,
+            )
             
             top_issue = my_in_progress[0]
             result = {
@@ -159,8 +166,13 @@ def run(args: argparse.Namespace) -> int:
             return 0
 
         ready_numbers = [i["number"] for i in ready]
-        priority_scores = calculate_priority(graph, ready_numbers)
-        ready = sorted(ready, key=lambda x: (priority_scores.get(x["number"], 0), -x["number"]), reverse=True)
+        ready_refs = [IssueRef(repo, int(i["number"])) for i in ready]
+        priority_scores = calculate_priority(graph, ready_refs)
+        ready = sorted(
+            ready,
+            key=lambda x: (priority_scores.get(IssueRef(repo, int(x["number"])), 0), -x["number"]),
+            reverse=True,
+        )
 
         if getattr(args, "claim", False):
             top_issue = ready[0]
