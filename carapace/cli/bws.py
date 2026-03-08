@@ -72,7 +72,7 @@ def resolve_bws_binary() -> str:
         return override
 
     wrapper_path = Path(sys.argv[0]).resolve()
-    for candidate in (shutil.which("bws"), shutil.which("bwse")):
+    for candidate in (shutil.which("bws"),):
         if not candidate:
             continue
         if _same_file(candidate, str(wrapper_path)):
