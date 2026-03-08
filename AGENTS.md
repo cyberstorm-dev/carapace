@@ -40,6 +40,17 @@ Expected:
   - `ok`
   - `result`
 
+For a stricter check, run:
+
+```bash
+source /path/to/carapace/examples/agent-bootstrap.validate.sh
+```
+
+It validates:
+- help command shape
+- HATEOAS `list` flow
+- passthrough `secret list` proxying against real `bws`
+
 ## BWS wrapper (important)
 - Primary command: `carapace-bws`
 - Recommended alias: `alias bws='carapace-bws'`
