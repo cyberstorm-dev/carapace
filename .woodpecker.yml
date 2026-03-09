@@ -2,7 +2,9 @@ when:
   - event: push
     branch: main
   - event: manual
-
+  - event: pull_request
+    branch: main
+    
 steps:
   - name: test
     image: python:3.12-slim
