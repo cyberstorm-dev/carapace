@@ -283,7 +283,11 @@ def run(args: argparse.Namespace) -> int:
 
         ready = scheduler.compute_ready_queue(policy=policy, graph=graph)
         if args.assignee:
-            ready = [issue for issue in ready if args.assignee in _assignees(issue)]
+            # Include issues assigned to the agent OR the orchestrator (scheduler)
+            ready = [
+                issue for issue in ready 
+                if args.assignee in _assignees(issue) or "scheduler" in _assignees(issue) or not _assignees(issue)
+            ]
 
         command_str = "carapace queue"
         if args.milestone:
@@ -310,6 +314,16 @@ def run(args: argparse.Namespace) -> int:
             top_item = queue_items[0]
             identity = top_item.get("identity", {})
             issue_number = int(identity["number"])
+            
+            # Auto-Assignment: If assigned to scheduler or nobody, re-assign to caller
+            current_assignees = top_item.get("assignees", [])
+            if args.assignee and (not current_assignees or "scheduler" in current_assignees):
+                try:
+                    client.patch_issue(issue_number, {"assignees": [args.assignee]})
+                    top_item["assignees"] = [args.assignee]
+                except Exception as e:
+                    logging.warning("Failed to auto-assign issue #%d to %s: %s", issue_number, args.assignee, e)
+
             try:
                 client.add_label(issue_number, 7)
                 client.remove_label(issue_number, 5)

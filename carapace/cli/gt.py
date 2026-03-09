@@ -147,6 +147,10 @@ class GiteaClient:
         # Gitea DELETE to /labels/{id} removes that specific label
         return self._request("DELETE", f"issues/{issue_index}/labels/{label_id}")
 
+    def patch_issue(self, issue_index: int, data: Dict[str, Any]):
+        """Updates issue metadata via PATCH."""
+        return self._request("PATCH", f"issues/{issue_index}", data)
+
 
 def main():
     parser = argparse.ArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)
