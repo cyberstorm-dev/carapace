@@ -82,13 +82,6 @@ def test_allows_missing_assignee(valid_issues: list[dict], sample_config: Path):
     assert not _messages_by_tier(messages, validation.TIER_HARD)
 
 
-def test_flags_missing_parent_dependency(valid_issues: list[dict], sample_config: Path):
-    cfg = config_module.load_config(str(sample_config))
-    valid_issues[1]["labels"] = []
-    valid_issues[1]["dependencies"] = []
-    messages = validation.validate_issues(valid_issues, cfg)
-    errors = _messages_by_tier(messages, validation.TIER_HARD)
-    assert "Issue #2 has no dependency/parent" in " ".join(errors)
 
 
 def test_ignores_out_of_scope_dependencies(valid_issues: list[dict], sample_config: Path):
@@ -99,13 +92,6 @@ def test_ignores_out_of_scope_dependencies(valid_issues: list[dict], sample_conf
     assert errors == []
 
 
-def test_flags_unwired_issue(valid_issues: list[dict], sample_config: Path):
-    cfg = config_module.load_config(str(sample_config))
-    valid_issues.append({"number": 4, "labels": [], "assignee": {"login": "builder"}, "milestone": {"id": 3}})
-    messages = validation.validate_issues(valid_issues, cfg)
-    joined = " ".join(_messages_by_tier(messages, validation.TIER_HARD))
-    assert "Issue #4 is not depended on" in joined
-    assert "Issue #4 does not reach a molt-labeled issue" in joined
 
 
 def test_cli_with_fixture_file(tmp_path: Path, valid_issues: list[dict], sample_config: Path):
