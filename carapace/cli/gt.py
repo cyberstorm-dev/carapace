@@ -91,6 +91,10 @@ class GiteaClient:
         }
         return self._request("DELETE", f"issues/{issue_index}/dependencies", payload)
 
+    def assign_issue(self, issue_index: int, assignees: list[str]):
+        payload = {"assignees": assignees}
+        return self._request("PATCH", f"issues/{issue_index}", data=payload)
+
     def add_label(self, issue_index: int, label_id: int):
         # Gitea POST to /labels adds to the existing set
         payload = {"labels": [label_id]}

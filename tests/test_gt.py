@@ -52,5 +52,24 @@ class TestGT(unittest.TestCase):
         payload = json.loads(last_call_req.data.decode("utf-8"))
         self.assertEqual(payload, {"index": 20, "owner": "owner", "repo": "repo"})
 
+
+
+    @patch("urllib.request.urlopen")
+    def test_assign_issue(self, mock_urlopen):
+        """Should send PATCH request to assign issue."""
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"number": 10, "assignees": [{"login": "builder"}]}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.assign_issue(10, ["builder"])
+        
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.get_method(), "PATCH")
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/issues/10")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"assignees": ["builder"]})
+
 if __name__ == "__main__":
     unittest.main()

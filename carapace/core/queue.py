@@ -95,7 +95,7 @@ def run(args: argparse.Namespace) -> int:
             filtered = []
             for i in ready:
                 assignees = [a.get("login") for a in (i.get("assignees") or [])]
-                if args.assignee in assignees:
+                if args.assignee in assignees or not assignees:
                     filtered.append(i)
             ready = filtered
 
@@ -122,8 +122,10 @@ def run(args: argparse.Namespace) -> int:
             try:
                 client.add_label(iid, 7) # in-progress
                 client.remove_label(iid, 5) # needs-pr
-            except Exception:
-                pass 
+                if args.assignee:
+                    client.assign_issue(iid, [args.assignee])
+            except Exception as e:
+                print(f"Warning: Failed to update issue state: {e}", file=sys.stderr) 
                 
             result = {
                 "claimed_issue": {
