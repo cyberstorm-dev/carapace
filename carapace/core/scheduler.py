@@ -3,6 +3,7 @@ import sys
 from typing import List, Dict, Any, Optional
 
 from carapace.cli.gt import GiteaClient, GiteaAPIError
+from carapace.issue_ref import IssueRef
 from carapace.worker.base import Worker, WorkerConfig
 from carapace.worker.pool import APIKeyPool, WorkerPool, APIKey
 from carapace.worker.host import HostWorker
@@ -23,7 +24,7 @@ class Scheduler:
                 issue["dependencies"] = self.client.list_dependencies(issue['number'])
             except GiteaAPIError:
                 issue["dependencies"] = []
-        return build_graph(issues)
+        return build_graph(issues, default_repo=self.client.repo_full_name)
 
     def compute_ready_queue(self, policy: str = "strict", graph: Optional[Any] = None) -> List[Dict[str, Any]]:
         """
@@ -63,11 +64,12 @@ class Scheduler:
             
             if is_ready:
                 # Re-fetch full issue data for the result
-                ready_issues.append(self.client._request("GET", f"issues/{node}"))
+                ready_issues.append(self.client._request("GET", f"issues/{node.number}"))
                 
         # Sort by priority (descendants in the graph)
-        priority_scores = calculate_priority(graph, [i["number"] for i in ready_issues])
-        ready_issues = sorted(ready_issues, key=lambda x: (priority_scores.get(x["number"], 0), -x["number"]), reverse=True)
+        ready_refs = [IssueRef(self.client.repo_full_name, i["number"]) for i in ready_issues]
+        priority_scores = calculate_priority(graph, ready_refs)
+        ready_issues = sorted(ready_issues, key=lambda x: (priority_scores.get(IssueRef(self.client.repo_full_name, x["number"]), 0), -x["number"]), reverse=True)
         
         return ready_issues
 
