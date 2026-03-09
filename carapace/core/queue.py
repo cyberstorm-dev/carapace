@@ -168,6 +168,49 @@ def run(args: argparse.Namespace) -> int:
             return 0
 
         client = GiteaClient(url, token, repo)
+
+        if getattr(args, "release", False):
+            if not args.assignee:
+                print(dump_yaml(envelope(command="carapace queue --release", ok=False, error={"message": "Assignee required for release"})))
+                return 1
+            
+            # Find issues assigned to this agent marked in-progress
+            issues = client.list_issues(state="open")
+            to_release = []
+            for issue in issues:
+                if args.assignee in _assignees(issue) and "in-progress" in [l.lower() for l in _labels(issue)]:
+                    to_release.append(issue)
+            
+            if not to_release:
+                print(dump_yaml(envelope(command="carapace queue --release", ok=True, result={"message": "No issues to release for this assignee"})))
+                return 0
+            
+            # Label lookup for IDs
+            repo_labels = client.get_labels()
+            in_progress_id = next((l["id"] for l in repo_labels if l["name"].lower() == "in-progress"), None)
+            blocked_id = next((l["id"] for l in repo_labels if l["name"].lower() == "blocked"), None)
+            
+            results = []
+            for issue in to_release:
+                num = issue["number"]
+                # Unassign
+                client.patch_issue(num, {"assignees": []})
+                # Remove in-progress
+                if in_progress_id:
+                    client.remove_label(num, in_progress_id)
+                # Add blocked
+                if blocked_id:
+                    client.add_label(num, blocked_id)
+                
+                # Optional comment
+                if getattr(args, "reason", None):
+                    client._request("POST", f"issues/{num}/comments", {"body": f"**Status: Blocked**\nReason: {args.reason}"})
+                
+                results.append({"number": num, "title": issue["title"], "status": "released"})
+            
+            print(dump_yaml(envelope(command="carapace queue --release", ok=True, result={"released": results})))
+            return 0
+
         dummy_pool = WorkerPool(HostWorker(), APIKeyPool([]), max_parallel=1)
         scheduler = Scheduler(client, dummy_pool)
 
@@ -249,7 +292,8 @@ def run(args: argparse.Namespace) -> int:
                 if not isinstance(node, IssueRef) or node.repo != repo:
                     continue
                 issue_data = client._request("GET", f"issues/{node.number}")
-                if args.assignee in _assignees(issue_data):
+                issue_labels = [l.lower() for l in _labels(issue_data)]
+                if args.assignee in _assignees(issue_data) and "blocked" not in issue_labels:
                     my_in_progress.append(issue_data)
 
         if getattr(args, "claim", False) and my_in_progress:

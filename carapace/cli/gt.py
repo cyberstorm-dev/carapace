@@ -151,6 +151,10 @@ class GiteaClient:
         """Updates issue metadata via PATCH."""
         return self._request("PATCH", f"issues/{issue_index}", data)
 
+    def get_labels(self) -> List[Dict[str, Any]]:
+        """Fetches all repository labels."""
+        return self._request("GET", "labels") or []
+
 
 def main():
     parser = argparse.ArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)

@@ -51,6 +51,8 @@ def _build_parser() -> argparse.ArgumentParser:
     queue_parser.add_argument("--milestone", required=False, type=int)
     queue_parser.add_argument("--assignee", default=None)
     queue_parser.add_argument("--claim", action="store_true", help="Claim the top issue (marks in-progress)")
+    queue_parser.add_argument("--release", action="store_true", help="Unclaim in-progress issues and mark as blocked")
+    queue_parser.add_argument("--reason", help="Reason for releasing/blocking the issue")
     queue_parser.add_argument("--repo", default=None)
     queue_parser.add_argument("--gitea-url", default=None)
     queue_parser.add_argument("--token", default=None)

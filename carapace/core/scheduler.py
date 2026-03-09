@@ -45,7 +45,11 @@ class Scheduler:
         ready_issues = []
         for node in relevant_nodes:
             data = graph.nodes[node]
-            if "needs-pr" not in [l.lower() for l in data.get("labels", [])]:
+            labels = [l.lower() for l in data.get("labels", [])]
+            if "needs-pr" not in labels:
+                continue
+            
+            if "blocked" in labels:
                 continue
                 
             # Check dependencies
