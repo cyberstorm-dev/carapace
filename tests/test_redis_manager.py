@@ -1,4 +1,5 @@
 import unittest
+import json
 from unittest.mock import MagicMock, patch
 
 from carapace.core.queue import run_daemon
@@ -40,10 +41,21 @@ class TestQueueDaemon(unittest.TestCase):
 
         mock_scheduler.compute_ready_queue.assert_called_once()
 
-        expected_zadd = {"101": 2.0, "102": 1.0}
-
         mock_pipeline.delete.assert_called_with("carapace:queue:test/repo")
-        mock_pipeline.zadd.assert_called_with("carapace:queue:test/repo", expected_zadd)
+        zset_payload = mock_pipeline.zadd.call_args[0][1]
+        self.assertEqual(len(zset_payload), 2)
+        members = list(zset_payload.keys())
+        scores = list(zset_payload.values())
+        self.assertEqual(scores, [2.0, 1.0])
+        decoded = [json.loads(member) for member in members]
+        self.assertEqual(
+            decoded[0]["identity"],
+            {"forge": "gitea", "repo": "test/repo", "number": 101},
+        )
+        self.assertEqual(
+            decoded[1]["identity"],
+            {"forge": "gitea", "repo": "test/repo", "number": 102},
+        )
         mock_pipeline.execute.assert_called_once()
 
 

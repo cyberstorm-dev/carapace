@@ -6,11 +6,113 @@ import redis
 
 from carapace.hateoas import envelope
 from carapace.cli.gt import GiteaClient, GiteaAPIError
+from carapace.core.queue_contract import decode_queue_member, issue_ref_tuple
+
+
+def _extract_queue_items(raw_members: List[str]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for member in raw_members:
+        parsed = decode_queue_member(member)
+        if parsed:
+            items.append(parsed)
+    return items
+
+
+def _extract_queue_issue_refs(raw_members: List[str], default_forge: str = "gitea") -> List[tuple[str, str, int]]:
+    refs: List[tuple[str, str, int]] = []
+    for parsed in _extract_queue_items(raw_members):
+        ref = issue_ref_tuple(parsed, default_forge=default_forge)
+        if not ref:
+            continue
+        refs.append(ref)
+    return refs
+
+
+def _format_identity(identity: Dict[str, Any], default_forge: str = "gitea") -> Optional[str]:
+    if not isinstance(identity, dict):
+        return None
+    forge = identity.get("forge") or default_forge
+    repo = identity.get("repo")
+    number = identity.get("number")
+    if not repo or number is None:
+        return None
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        return None
+    return f"{forge}:{repo}#{number}"
+
+
+def _build_queue_next_actions(
+    queue_items: List[Dict[str, Any]],
+    default_forge: str,
+    target_repo: str,
+    redis_url: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    repo_items: List[Dict[str, Any]] = []
+    for item in queue_items:
+        ref = issue_ref_tuple(item, default_forge=default_forge)
+        if not ref:
+            continue
+        forge, repo, _ = ref
+        if forge == default_forge and repo == target_repo:
+            repo_items.append(item)
+
+    if not repo_items:
+        return []
+
+    top_item = repo_items[0]
+    top_ref = issue_ref_tuple(top_item, default_forge=default_forge)
+    if not top_ref:
+        return []
+    forge, repo, number = top_ref
+    top_ref_text = f"{forge}:{repo}#{number}"
+
+    queue_cmd = f"carapace queue --repo {target_repo}"
+    if redis_url:
+        queue_cmd = f"{queue_cmd} --redis-url {redis_url}"
+    claim_cmd = f"{queue_cmd} --claim"
+
+    actions: List[Dict[str, str]] = [
+        {
+            "command": claim_cmd,
+            "description": f"Claim top queue item {top_ref_text}",
+        }
+    ]
+
+    upstream_refs = [
+        _format_identity(identity, default_forge=default_forge)
+        for identity in (top_item.get("upstream") or [])
+    ]
+    upstream_refs = [ref for ref in upstream_refs if ref]
+    if upstream_refs:
+        actions.append(
+            {
+                "command": queue_cmd,
+                "description": f"Inspect upstream blockers for {top_ref_text}: {', '.join(upstream_refs)}",
+            }
+        )
+
+    downstream_refs = [
+        _format_identity(identity, default_forge=default_forge)
+        for identity in (top_item.get("downstream") or [])
+    ]
+    downstream_refs = [ref for ref in downstream_refs if ref]
+    if downstream_refs:
+        actions.append(
+            {
+                "command": queue_cmd,
+                "description": f"Inspect downstream dependents for {top_ref_text}: {', '.join(downstream_refs)}",
+            }
+        )
+
+    return actions
 
 
 def run(args: argparse.Namespace) -> int:
     client = GiteaClient(args.gitea_url, args.token, args.repo)
     triggers = []
+    default_forge = "github" if "github" in (args.gitea_url or "").lower() else "gitea"
 
     try:
         pulls = client._request("GET", "pulls?state=open") or []
@@ -71,14 +173,40 @@ def run(args: argparse.Namespace) -> int:
 
         # Check for issues that need work
         # Prioritize checking the Redis queue if available
-        redis_queue_items = []
+        redis_queue_items: List[tuple[str, str, int]] = []
+        redis_queue_payloads: List[Dict[str, Any]] = []
         if args.redis_url:
             try:
                 r = redis.from_url(args.redis_url, decode_responses=True)
                 queue_key = f"carapace:queue:{args.repo}"
-                redis_queue_items = r.zrevrange(queue_key, 0, -1)
+                raw_members = r.zrevrange(queue_key, 0, -1)
+                redis_queue_payloads = _extract_queue_items(raw_members)
+                redis_queue_items = [
+                    ref
+                    for ref in (
+                        issue_ref_tuple(item, default_forge=default_forge) for item in redis_queue_payloads
+                    )
+                    if ref
+                ]
             except Exception as e:
                 print(f"Warning: Failed to connect to Redis queue: {e}", file=sys.stderr)
+
+        repo_ready_queue = [num for forge, repo_name, num in redis_queue_items if forge == default_forge and repo_name == args.repo]
+        queue_next_actions = _build_queue_next_actions(
+            queue_items=redis_queue_payloads,
+            default_forge=default_forge,
+            target_repo=args.repo,
+            redis_url=args.redis_url,
+        )
+        queue_head = None
+        for item in redis_queue_payloads:
+            ref = issue_ref_tuple(item, default_forge=default_forge)
+            if not ref:
+                continue
+            forge, repo_name, _ = ref
+            if forge == default_forge and repo_name == args.repo:
+                queue_head = item
+                break
         
         # Check assigned issues
         issues = client.list_issues(state="open")
@@ -105,9 +233,9 @@ def run(args: argparse.Namespace) -> int:
                         "agent": "builder",
                         "reason": f"Issue #{issue_num} is active but has no open PR"
                     })
-                elif str(issue_num) in redis_queue_items:
+                elif issue_num in repo_ready_queue:
                     # It's at the top of the ready queue
-                    if redis_queue_items.index(str(issue_num)) == 0:
+                    if repo_ready_queue.index(issue_num) == 0:
                          triggers.append({
                             "agent": "builder",
                             "reason": f"Issue #{issue_num} is top of the ready queue"
@@ -119,11 +247,15 @@ def run(args: argparse.Namespace) -> int:
                  "reason": "All PRs reviewed, no active issues need attention"
              })
 
+        result = {"triggers": triggers}
+        if queue_head is not None:
+            result["queue_head"] = queue_head
+
         payload = envelope(
             command="carapace trigger",
             ok=True,
-            result={"triggers": triggers},
-            next_actions=[]
+            result=result,
+            next_actions=queue_next_actions
         )
         return payload, 0
         

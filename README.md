@@ -26,6 +26,41 @@ Primary entrypoints (after the install above):
 - `gt` (Gitea helper)
 - `ci-metrics`, `pipeline-metrics`, `task-timeline-metrics`, `reviewer-metrics`
 
+## Queue Contract (Worker-First)
+
+`carapace queue` now emits queue items with explicit identity tuples and execution context:
+
+- `identity`: `{ forge, repo, number }`
+- `reasons`: scheduling explanation for why the item is ready/selected
+- `upstream` / `downstream`: dependency context as identity tuples
+- `next_actions`: actionable hints for worker planning
+
+Example:
+
+```yaml
+ok: true
+command: carapace queue
+result:
+  queue_items:
+    - kind: issue
+      identity:
+        forge: gitea
+        repo: openclaw/nisto-home
+        number: 282
+      reasons:
+        - active_subgraph
+        - needs-pr
+        - dependencies_clear
+      upstream: []
+      downstream: []
+      next_actions:
+        - action: begin_work
+  count: 1
+```
+
+Redis queue members are stored as JSON-serialized queue items in the sorted set
+`carapace:queue:<repo>` (score = queue priority).
+
 ## Carapace BWS (agent-first)
 
 `carapace-bws` is the canonical agent entrypoint for secret automation.

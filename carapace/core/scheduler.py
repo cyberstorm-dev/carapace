@@ -69,11 +69,12 @@ class Scheduler:
             ]
         return build_graph(issues, default_repo=primary_repo)
 
-    def compute_ready_queue(self) -> List[Dict[str, Any]]:
+    def compute_ready_queue(self, graph: Any = None) -> List[Dict[str, Any]]:
         """
         Finds issues that are open, have 'needs-pr', and are part of the active topological subgraph.
         """
-        graph = self.fetch_dag()
+        if graph is None:
+            graph = self.fetch_dag()
         primary_repo = self.client.repo_full_name
         active_nodes = get_active_subgraph(graph)
         
