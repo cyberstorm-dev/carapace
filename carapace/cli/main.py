@@ -57,6 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     queue_parser.add_argument("--redis-url", default=os.environ.get("REDIS_URL"), help="Use Redis for queue operations")
     queue_parser.add_argument("--daemon", action="store_true", help="Continuously recompute and publish the ready queue")
     queue_parser.add_argument("--poll-interval", type=int, default=int(os.environ.get("POLL_INTERVAL", "60")), help="Polling interval in seconds for daemon mode")
+    queue_parser.add_argument("--policy", choices=["strict", "permissive"], default="strict", help="Scheduling policy (strict=active subgraph only, permissive=all ready issues)")
 
     cycle_parser = sub.add_parser("cycle-time", help="Record cycle-time entry")
     cycle_parser.add_argument("--issue", type=int, required=True)

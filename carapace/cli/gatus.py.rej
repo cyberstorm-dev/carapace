@@ -1,0 +1,34 @@
+diff a/carapace/cli/gatus.py b/carapace/cli/gatus.py	(rejected hunks)
+@@ -22,15 +22,14 @@ def run_gatus_check(
+ 
+     failed_endpoints = []
+     total_checked = 0
+-    skip_groups = set(skip_groups or [])
++    skip_groups_set = {g.lower() for g in (skip_groups or []) if g}
+ 
+     for endpoint in data:
+         name = endpoint.get("name", "")
+         group = endpoint.get("group", "")
+-        results = endpoint.get("results", [])
+-
+-        if group in skip_groups:
++        if skip_groups_set and group.lower() in skip_groups_set:
+             continue
++        results = endpoint.get("results", [])
+ 
+         # Filter for relevant endpoints. We only care if the endpoint name or group contains our target nodes.
+         # This prevents failing the build due to dev nodes (like infralink*) being down.
+@@ -73,7 +72,12 @@ def run(args: argparse.Namespace) -> int:
+     try:
+         # Default nodes to check if none provided
+         nodes = args.nodes.split(",") if args.nodes else ["cyberstorm-citadel", "cyberstorm-watchtower"]
+-        skip_groups = args.skip_groups.split(",") if getattr(args, "skip_groups", None) else ["dns"]
++        skip_groups = []
++        if getattr(args, "skip_groups", None):
++            skip_groups = [g.strip() for g in args.skip_groups.split(",") if g.strip()]
++        if not skip_groups:
++            skip_groups = ["dns"]
++
+         result = run_gatus_check(args.gatus_url, nodes, skip_groups=skip_groups)
+ 
+         payload = envelope(
