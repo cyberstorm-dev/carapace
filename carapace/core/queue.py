@@ -71,7 +71,7 @@ def run(args: argparse.Namespace) -> int:
 
                 ready_issues = []
                 for issue_id_str, score in items:
-                    issue_id = int(issue_id_str)
+                    issue_id = int(issue_id_str.split("#")[-1])
                     try:
                         issue_data = client._request("GET", f"issues/{issue_id}")
                         ready_issues.append({
@@ -271,7 +271,7 @@ def run_daemon(gitea_url: str, token: str, repo: str, redis_url: str, poll_inter
                 zadd_args = {}
                 count = len(ready_issues)
                 for idx, issue in enumerate(ready_issues):
-                    issue_num = str(issue["number"])
+                    issue_num = f"gitea:{repo}#{issue['number']}"
                     score = float(count - idx)
                     zadd_args[issue_num] = score
 
