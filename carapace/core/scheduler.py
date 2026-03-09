@@ -20,8 +20,7 @@ class Scheduler:
         issues = self.client.list_issues(state="open")
         for issue in issues:
             try:
-                deps = self.client._request("GET", f"issues/{issue['number']}/dependencies") or []
-                issue["dependencies"] = [d["number"] for d in deps]
+                issue["dependencies"] = self.client.list_dependencies(issue['number'])
             except GiteaAPIError:
                 issue["dependencies"] = []
         return build_graph(issues)

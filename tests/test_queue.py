@@ -26,7 +26,7 @@ class TestQueueCLI(unittest.TestCase):
 
         self.assertEqual(code, 0)
         mock_run_daemon.assert_called_once_with(
-            "http://gitea.test", "token", "repo/name", "redis://localhost:6379/0", 30
+            "http://gitea.test", "token", "repo/name", "redis://localhost:6379/0", 30, "strict"
         )
 
     def test_daemon_requires_redis_url(self):
@@ -46,7 +46,7 @@ class TestQueueCLI(unittest.TestCase):
             code = queue.run(args)
 
         self.assertEqual(code, 1)
-        self.assertIn("Missing REDIS_URL", fake_stdout.getvalue())
+        self.assertIn("Redis URL is required for daemon mode", fake_stdout.getvalue())
 
     @patch("redis.from_url")
     @patch("carapace.core.queue.GiteaClient")
