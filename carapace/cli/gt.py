@@ -99,8 +99,11 @@ class GiteaClient:
                 return raw
         except error.HTTPError as e:
             body = e.read().decode("utf-8")
+            hint = ""
+            if e.code == 404 and path.startswith("projects/"):
+                hint = " (possible wrong project id or no board access)"
             raise GiteaAPIError(
-                message=f"Web request failed for {path}: {body[:300]}",
+                message=f"Web request failed for {path}{hint}: {body[:300]}",
                 code=e.code,
                 reason=e.reason,
             )
@@ -126,26 +129,57 @@ class GiteaClient:
             cid = int(col_id)
             columns[cid] = {"id": cid, "title": None, "key": None}
 
-        titles = re.findall(r'class="project-column-title-text"[^>]*>([^<]+)<', html)
-        ids_sorted = sorted(columns.keys())
-        for idx, title in enumerate(titles):
-            if idx >= len(ids_sorted):
-                break
-            cid = ids_sorted[idx]
+        # Gitea 1.25+ renders extra classes and SVG wrappers in column headers.
+        # The modal metadata remains stable and includes id/title pairs.
+        for col_id, title in re.findall(
+            r'data-modal-project-column-id="(\d+)".*?data-modal-project-column-title-input="([^"]*)"',
+            html,
+            flags=re.S,
+        ):
+            cid = int(col_id)
+            if cid not in columns:
+                columns[cid] = {"id": cid, "title": None, "key": None}
             title_clean = title.strip()
-            columns[cid]["title"] = title_clean
-            columns[cid]["key"] = self._column_key(title_clean)
+            if title_clean:
+                columns[cid]["title"] = title_clean
+                columns[cid]["key"] = self._column_key(title_clean)
 
         resolved = [c for c in columns.values() if c["title"]]
         resolved.sort(key=lambda c: c["id"])
         return resolved
+
+    def list_projects(self) -> List[Dict[str, Any]]:
+        html = self._web_request("GET", "issues", accept="text/html")
+        if not isinstance(html, str):
+            raise RuntimeError("Unexpected non-HTML response while reading repository issue page")
+
+        pattern = (
+            rf'<div class="item issue-action" data-element-id="(\d+)" '
+            rf'data-url="/{re.escape(self.repo_full_name)}/issues/projects">(.*?)</div>'
+        )
+
+        projects: List[Dict[str, Any]] = []
+        for pid_raw, raw_body in re.findall(pattern, html, flags=re.S):
+            pid = int(pid_raw)
+            if pid == 0:
+                continue
+            name = re.sub(r"<[^>]+>", "", raw_body).strip()
+            if not name:
+                continue
+            projects.append({"id": pid, "name": name})
+
+        projects.sort(key=lambda p: p["id"])
+        return projects
 
     def move_issue_to_project_column(
         self, project_id: int, issue_index: int, target_column: str
     ) -> Dict[str, Any]:
         columns = self.list_project_columns(project_id)
         if not columns:
-            raise RuntimeError(f"No columns found for project #{project_id}")
+            raise RuntimeError(
+                f"No columns found for project #{project_id}. "
+                "Run `gt project list` to confirm project id and board visibility."
+            )
 
         target_key = self._column_key(target_column)
         target = next(
@@ -299,6 +333,8 @@ def main():
     project_parser = subparsers.add_parser("project", help="Project board operations")
     project_subparsers = project_parser.add_subparsers(dest="project_action")
 
+    project_subparsers.add_parser("list", help="List repository project boards")
+
     project_cols = project_subparsers.add_parser("columns", help="List project columns")
     project_cols.add_argument("project_id", type=int)
 
@@ -332,6 +368,7 @@ def main():
                     },
                     {"name": "label add", "description": "Add label to issue", "usage": "gt label add <issue_index> <label_id>"},
                     {"name": "label rm", "description": "Remove label from issue", "usage": "gt label rm <issue_index> <label_id>"},
+                    {"name": "project list", "description": "List repository project boards", "usage": "gt project list"},
                     {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
                     {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
                 ]
@@ -429,7 +466,18 @@ def main():
                 print(dump_yaml(payload))
 
         elif args.command == "project":
-            if args.project_action == "columns":
+            if args.project_action == "list":
+                projects = client.list_projects()
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"projects": projects},
+                    next_actions=[
+                        {"command": "gt project columns <project_id>", "description": "List board columns"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.project_action == "columns":
                 columns = client.list_project_columns(args.project_id)
                 payload = envelope(
                     command=full_cmd,
