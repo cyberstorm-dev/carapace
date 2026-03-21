@@ -267,6 +267,46 @@ class GiteaClient:
         """Fetches all repository labels."""
         return self._request("GET", "labels") or []
 
+    def list_comments(self, issue_index: int) -> List[Dict[str, Any]]:
+        return self._request("GET", f"issues/{issue_index}/comments") or []
+
+    def create_comment(self, issue_index: int, body: str) -> Dict[str, Any]:
+        return self._request("POST", f"issues/{issue_index}/comments", {"body": body})
+
+    def update_comment(self, comment_id: int, body: str) -> Dict[str, Any]:
+        # Repository-scoped comment edit route in Gitea API
+        return self._request("PATCH", f"issues/comments/{comment_id}", {"body": body})
+
+    def find_workpad_comment(
+        self, issue_index: int, marker: str = "## Codex Workpad"
+    ) -> Optional[Dict[str, Any]]:
+        comments = self.list_comments(issue_index)
+        for c in comments:
+            body = c.get("body")
+            if isinstance(body, str) and marker in body:
+                return c
+        return None
+
+    def upsert_workpad_comment(
+        self,
+        issue_index: int,
+        body: str,
+        marker: str = "## Codex Workpad",
+    ) -> Dict[str, Any]:
+        if marker not in body:
+            raise ValueError(f"workpad body must contain marker: {marker!r}")
+        existing = self.find_workpad_comment(issue_index, marker=marker)
+        if existing:
+            cid = existing.get("id")
+            if not isinstance(cid, int):
+                raise RuntimeError(f"Existing workpad has invalid comment id: {cid!r}")
+            updated = self.update_comment(cid, body)
+            updated["_workpad_action"] = "updated"
+            return updated
+        created = self.create_comment(issue_index, body)
+        created["_workpad_action"] = "created"
+        return created
+
 
 def main():
     parser = argparse.ArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)
@@ -294,6 +334,36 @@ def main():
     label_parser.add_argument("action", choices=["add", "rm"])
     label_parser.add_argument("issue", type=int)
     label_parser.add_argument("label_id", type=int)
+
+    # Issue comments
+    comment_parser = subparsers.add_parser("comment", help="Issue comment operations")
+    comment_subparsers = comment_parser.add_subparsers(dest="comment_action")
+
+    comment_list = comment_subparsers.add_parser("list", help="List comments on an issue")
+    comment_list.add_argument("issue", type=int)
+
+    comment_add = comment_subparsers.add_parser("add", help="Create a comment on an issue")
+    comment_add.add_argument("issue", type=int)
+    comment_add_group = comment_add.add_mutually_exclusive_group(required=True)
+    comment_add_group.add_argument("--body", help="Comment body text")
+    comment_add_group.add_argument("--body-file", help="Path to file containing comment body")
+
+    # Workpad (single persistent issue comment)
+    workpad_parser = subparsers.add_parser("workpad", help="Single-comment workpad operations")
+    workpad_subparsers = workpad_parser.add_subparsers(dest="workpad_action")
+
+    workpad_get = workpad_subparsers.add_parser("get", help="Get workpad comment by marker")
+    workpad_get.add_argument("issue", type=int)
+    workpad_get.add_argument("--marker", default="## Codex Workpad")
+
+    workpad_upsert = workpad_subparsers.add_parser(
+        "upsert", help="Create or update workpad comment by marker"
+    )
+    workpad_upsert.add_argument("issue", type=int)
+    workpad_upsert.add_argument("--marker", default="## Codex Workpad")
+    workpad_upsert_group = workpad_upsert.add_mutually_exclusive_group(required=True)
+    workpad_upsert_group.add_argument("--body", help="Full workpad body text")
+    workpad_upsert_group.add_argument("--body-file", help="Path to file containing full workpad body")
 
     # Project board operations (web-routed in Gitea)
     project_parser = subparsers.add_parser("project", help="Project board operations")
@@ -334,6 +404,10 @@ def main():
                     {"name": "label rm", "description": "Remove label from issue", "usage": "gt label rm <issue_index> <label_id>"},
                     {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
                     {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
+                    {"name": "comment list", "description": "List issue comments", "usage": "gt comment list <issue_index>"},
+                    {"name": "comment add", "description": "Add issue comment", "usage": "gt comment add <issue_index> --body-file workpad.md"},
+                    {"name": "workpad get", "description": "Get single workpad comment", "usage": "gt workpad get <issue_index> [--marker \"## Codex Workpad\"]"},
+                    {"name": "workpad upsert", "description": "Create/update workpad comment", "usage": "gt workpad upsert <issue_index> --body-file workpad.md [--marker \"## Codex Workpad\"]"},
                 ]
             },
             next_actions=[
@@ -451,6 +525,81 @@ def main():
                     next_actions=[
                         {"command": f"gt project columns {args.project_id}", "description": "List project columns"},
                     ],
+                )
+                print(dump_yaml(payload))
+            else:
+                parser.print_help()
+
+        elif args.command == "comment":
+            if args.comment_action == "list":
+                comments = client.list_comments(args.issue)
+                result = [
+                    {
+                        "id": c.get("id"),
+                        "user": (c.get("user") or {}).get("login"),
+                        "created_at": c.get("created_at"),
+                        "updated_at": c.get("updated_at"),
+                        "body": c.get("body"),
+                    }
+                    for c in comments
+                ]
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"issue": args.issue, "count": len(result), "comments": result},
+                )
+                print(dump_yaml(payload))
+            elif args.comment_action == "add":
+                body = args.body
+                if args.body_file:
+                    with open(args.body_file, "r", encoding="utf-8") as f:
+                        body = f.read()
+                created = client.create_comment(args.issue, body or "")
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "issue": args.issue,
+                        "comment_id": created.get("id"),
+                        "html_url": created.get("html_url"),
+                    },
+                )
+                print(dump_yaml(payload))
+            else:
+                parser.print_help()
+
+        elif args.command == "workpad":
+            if args.workpad_action == "get":
+                workpad = client.find_workpad_comment(args.issue, marker=args.marker)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "issue": args.issue,
+                        "marker": args.marker,
+                        "exists": workpad is not None,
+                        "comment": workpad,
+                    },
+                )
+                print(dump_yaml(payload))
+            elif args.workpad_action == "upsert":
+                body = args.body
+                if args.body_file:
+                    with open(args.body_file, "r", encoding="utf-8") as f:
+                        body = f.read()
+                result = client.upsert_workpad_comment(
+                    args.issue, body or "", marker=args.marker
+                )
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "issue": args.issue,
+                        "marker": args.marker,
+                        "action": result.get("_workpad_action"),
+                        "comment_id": result.get("id"),
+                        "html_url": result.get("html_url"),
+                    },
                 )
                 print(dump_yaml(payload))
             else:
