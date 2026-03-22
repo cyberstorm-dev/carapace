@@ -102,5 +102,78 @@ class TestGT(unittest.TestCase):
         request = mock_urlopen.call_args_list[0][0][0]
         self.assertIn("assignee=builder", request.full_url)
 
+    @patch("urllib.request.urlopen")
+    def test_list_pulls_uses_expected_query(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps([{"number": 10, "state": "open"}]).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        pulls = self.client.list_pulls(state="open")
+
+        self.assertEqual(len(pulls), 1)
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertIn("/api/v1/repos/owner/repo/pulls?state=open&limit=100", req.full_url)
+
+    @patch("urllib.request.urlopen")
+    def test_create_pull_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"number": 22, "html_url": "http://example/pr/22"}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.create_pull(
+            title="feat: x",
+            head="issue-2-fix",
+            base="main",
+            body="summary",
+        )
+
+        self.assertEqual(result["number"], 22)
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/pulls")
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(
+            payload,
+            {"title": "feat: x", "head": "issue-2-fix", "base": "main", "body": "summary"},
+        )
+
+    @patch("urllib.request.urlopen")
+    def test_submit_pull_review_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"id": 99, "state": "APPROVED"}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.submit_pull_review(7, "APPROVED", "looks good")
+
+        self.assertEqual(result["state"], "APPROVED")
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/pulls/7/reviews")
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"event": "APPROVED", "body": "looks good"})
+
+    @patch("urllib.request.urlopen")
+    def test_merge_pull_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"sha": "abc123", "merged": True}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.merge_pull(7, merge_method="squash", commit_title="merge title")
+
+        self.assertTrue(result["merged"])
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/pulls/7/merge")
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"Do": "squash", "MergeTitleField": "merge title"})
+
 if __name__ == "__main__":
     unittest.main()

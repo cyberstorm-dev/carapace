@@ -78,11 +78,13 @@ class GiteaClient:
 
         web_cookie = os.environ.get("GITEA_WEB_COOKIE")
         web_csrf = os.environ.get("GITEA_WEB_CSRF_TOKEN")
+        if not web_csrf:
+            web_csrf = self._csrf_from_cookie(web_cookie)
 
         if not web_cookie:
             raise RuntimeError("GITEA_WEB_COOKIE required for project board web operations")
         if not web_csrf:
-            raise RuntimeError("GITEA_WEB_CSRF_TOKEN required for project board web operations")
+            raise RuntimeError("CSRF token missing: include _csrf in GITEA_WEB_COOKIE")
 
         headers["Cookie"] = web_cookie
         headers["X-CSRF-Token"] = web_csrf
@@ -107,6 +109,19 @@ class GiteaClient:
                 code=e.code,
                 reason=e.reason,
             )
+
+    @staticmethod
+    def _csrf_from_cookie(cookie: Optional[str]) -> Optional[str]:
+        if not cookie:
+            return None
+        for part in cookie.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            if key.strip() == "_csrf":
+                return value.strip()
+        return None
 
     @staticmethod
     def _column_key(name: str) -> str:
@@ -301,6 +316,49 @@ class GiteaClient:
         """Fetches all repository labels."""
         return self._request("GET", "labels") or []
 
+    def list_pulls(self, state: str = "open", base: Optional[str] = None, head: Optional[str] = None) -> List[Dict[str, Any]]:
+        params = [f"state={state}", "limit=100"]
+        if base:
+            params.append(f"base={base}")
+        if head:
+            params.append(f"head={head}")
+        return self._request("GET", f"pulls?{'&'.join(params)}") or []
+
+    def create_pull(self, title: str, head: str, base: str = "main", body: Optional[str] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"title": title, "head": head, "base": base}
+        if body:
+            payload["body"] = body
+        return self._request("POST", "pulls", payload)
+
+    def list_pull_reviews(self, pull_index: int) -> List[Dict[str, Any]]:
+        return self._request("GET", f"pulls/{pull_index}/reviews") or []
+
+    def submit_pull_review(self, pull_index: int, event: str, body: Optional[str] = None) -> Dict[str, Any]:
+        normalized_event = event.upper()
+        if normalized_event not in {"APPROVED", "REQUEST_CHANGES", "COMMENT"}:
+            raise ValueError("event must be one of: APPROVED, REQUEST_CHANGES, COMMENT")
+        payload: Dict[str, Any] = {"event": normalized_event}
+        if body:
+            payload["body"] = body
+        return self._request("POST", f"pulls/{pull_index}/reviews", payload)
+
+    def merge_pull(
+        self,
+        pull_index: int,
+        merge_method: str = "merge",
+        commit_title: Optional[str] = None,
+        commit_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        method = merge_method.lower()
+        if method not in {"merge", "rebase", "rebase-merge", "squash"}:
+            raise ValueError("merge_method must be one of: merge, rebase, rebase-merge, squash")
+        payload: Dict[str, Any] = {"Do": method}
+        if commit_title:
+            payload["MergeTitleField"] = commit_title
+        if commit_message:
+            payload["MergeMessageField"] = commit_message
+        return self._request("POST", f"pulls/{pull_index}/merge", payload)
+
 
 def main():
     parser = argparse.ArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)
@@ -347,6 +405,45 @@ def main():
         "--to", required=True, help="Target column name (e.g. 'To Do', 'In Progress')"
     )
 
+    # Pull request operations
+    pr_parser = subparsers.add_parser("pr", help="Pull request operations")
+    pr_subparsers = pr_parser.add_subparsers(dest="pr_action")
+
+    pr_list = pr_subparsers.add_parser("list", help="List pull requests")
+    pr_list.add_argument("--state", default="open", choices=["open", "closed", "all"])
+    pr_list.add_argument("--base", help="Filter by base branch")
+    pr_list.add_argument("--head", help="Filter by head branch")
+
+    pr_create = pr_subparsers.add_parser("create", help="Create a pull request")
+    pr_create.add_argument("--title", required=True, help="PR title")
+    pr_create.add_argument("--head", required=True, help="Head branch name")
+    pr_create.add_argument("--base", default="main", help="Base branch name")
+    pr_create.add_argument("--body", help="PR description body")
+
+    pr_reviews = pr_subparsers.add_parser("reviews", help="List pull request reviews")
+    pr_reviews.add_argument("pull", type=int, help="Pull request number")
+
+    pr_review = pr_subparsers.add_parser("review", help="Submit a pull request review")
+    pr_review.add_argument("pull", type=int, help="Pull request number")
+    pr_review.add_argument(
+        "--event",
+        required=True,
+        choices=["APPROVED", "REQUEST_CHANGES", "COMMENT"],
+        help="Review event type",
+    )
+    pr_review.add_argument("--body", help="Review comment body")
+
+    pr_merge = pr_subparsers.add_parser("merge", help="Merge a pull request")
+    pr_merge.add_argument("pull", type=int, help="Pull request number")
+    pr_merge.add_argument(
+        "--method",
+        default="merge",
+        choices=["merge", "rebase", "rebase-merge", "squash"],
+        help="Merge strategy",
+    )
+    pr_merge.add_argument("--title", help="Merge commit title")
+    pr_merge.add_argument("--message", help="Merge commit message")
+
     if len(sys.argv) == 1:
         # Self-documenting command tree
         payload = envelope(
@@ -371,6 +468,11 @@ def main():
                     {"name": "project list", "description": "List repository project boards", "usage": "gt project list"},
                     {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
                     {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
+                    {"name": "pr list", "description": "List pull requests", "usage": "gt pr list [--state open|closed|all]"},
+                    {"name": "pr create", "description": "Create a pull request", "usage": "gt pr create --title \"...\" --head branch --base main [--body \"...\"]"},
+                    {"name": "pr reviews", "description": "List reviews on a pull request", "usage": "gt pr reviews <pr_number>"},
+                    {"name": "pr review", "description": "Submit a pull request review", "usage": "gt pr review <pr_number> --event APPROVED|REQUEST_CHANGES|COMMENT [--body \"...\"]"},
+                    {"name": "pr merge", "description": "Merge a pull request", "usage": "gt pr merge <pr_number> [--method merge|rebase|rebase-merge|squash]"},
                 ]
             },
             next_actions=[
@@ -498,6 +600,107 @@ def main():
                     result={"message": "Issue moved on project board", **moved},
                     next_actions=[
                         {"command": f"gt project columns {args.project_id}", "description": "List project columns"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            else:
+                parser.print_help()
+
+        elif args.command == "pr":
+            if args.pr_action == "list":
+                pulls = client.list_pulls(state=args.state, base=args.base, head=args.head)
+                result_pulls = [
+                    {
+                        "number": p.get("number"),
+                        "state": p.get("state"),
+                        "title": p.get("title"),
+                        "head": (p.get("head") or {}).get("ref"),
+                        "base": (p.get("base") or {}).get("ref"),
+                        "merged": p.get("merged"),
+                        "html_url": p.get("html_url"),
+                    }
+                    for p in pulls
+                ]
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"pulls": result_pulls, "count": len(result_pulls)},
+                    next_actions=[
+                        {"command": "gt pr create --title \"...\" --head feature-branch --base main", "description": "Create a new pull request"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "create":
+                pr = client.create_pull(title=args.title, head=args.head, base=args.base, body=args.body)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "message": "Pull request created",
+                        "number": pr.get("number"),
+                        "url": pr.get("html_url"),
+                        "state": pr.get("state"),
+                    },
+                    next_actions=[
+                        {"command": f"gt pr reviews {pr.get('number')}", "description": "List current reviews"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "reviews":
+                reviews = client.list_pull_reviews(args.pull)
+                result_reviews = [
+                    {
+                        "id": r.get("id"),
+                        "state": r.get("state"),
+                        "submitted_at": r.get("submitted_at"),
+                        "user": (r.get("user") or {}).get("login"),
+                        "body": r.get("body"),
+                    }
+                    for r in reviews
+                ]
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"pull": args.pull, "reviews": result_reviews, "count": len(result_reviews)},
+                    next_actions=[
+                        {"command": f"gt pr review {args.pull} --event APPROVED --body \"looks good\"", "description": "Approve the pull request"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "review":
+                review = client.submit_pull_review(args.pull, args.event, args.body)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "message": "Pull request review submitted",
+                        "pull": args.pull,
+                        "review_id": review.get("id"),
+                        "state": review.get("state"),
+                    },
+                    next_actions=[
+                        {"command": f"gt pr reviews {args.pull}", "description": "List current reviews"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "merge":
+                merged = client.merge_pull(
+                    args.pull,
+                    merge_method=args.method,
+                    commit_title=args.title,
+                    commit_message=args.message,
+                )
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "message": "Pull request merged",
+                        "pull": args.pull,
+                        "sha": merged.get("sha"),
+                        "merged": merged.get("merged", True),
+                    },
+                    next_actions=[
+                        {"command": "gt pr list --state open", "description": "List remaining open pull requests"},
                     ],
                 )
                 print(dump_yaml(payload))
