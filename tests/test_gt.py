@@ -208,7 +208,7 @@ token_env = "ACME_TOKEN"
             },
         }
         args = gt.parse_args([])
-        with patch.dict(os.environ, {"ACME_TOKEN": "from-config"}, clear=False):
+        with patch.dict(os.environ, {"ACME_TOKEN": "from-config"}, clear=True):
             settings = gt.resolve_connection_settings(args, config=config)
         self.assertEqual(settings["url"], "https://gitea.example")
         self.assertEqual(settings["repo"], "acme/widgets")
