@@ -325,6 +325,22 @@ class GiteaClient:
             "column_title": target["title"],
         }
 
+    def remove_issue_from_project(self, project_id: int, issue_index: int) -> Dict[str, Any]:
+        issue_id = self._issue_internal_id(issue_index)
+        payload = f"id={project_id}"
+        self._web_request(
+            "POST",
+            f"issues/projects/delete?issue_ids={issue_id}",
+            payload,
+            accept="application/json",
+            content_type="application/x-www-form-urlencoded; charset=UTF-8",
+        )
+        return {
+            "issue_number": issue_index,
+            "issue_id": issue_id,
+            "project_id": project_id,
+        }
+
     def find_default_kanban_project(self) -> Dict[str, Any]:
         required = {self._column_key(name) for name in DEFAULT_KANBAN_COLUMNS}
         for project in self.list_projects():
@@ -651,6 +667,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--to", required=True, help="Target column name (e.g. 'To Do', 'In Progress')"
     )
 
+    project_remove = project_subparsers.add_parser(
+        "remove", help="Remove an issue card from a project board"
+    )
+    project_remove.add_argument("issue", type=int, help="Issue number (index)")
+    project_remove.add_argument("--project-id", type=int)
+    project_remove.add_argument(
+        "--use-default",
+        action="store_true",
+        help="Fallback to the default Kanban board (Backlog/To Do/In Progress/Done)",
+    )
+
     project_cards = project_subparsers.add_parser("cards", help="List project cards and issue membership")
     project_cards.add_argument("project_id", type=int)
     project_cards.add_argument("--issue", type=int)
@@ -761,6 +788,7 @@ def command_tree() -> List[Dict[str, str]]:
         {"name": "project cards", "description": "List project cards and issue membership", "usage": "gt project cards <project_id> [--issue <issue_number>]"},
         {"name": "project add", "description": "Add an issue card to a board", "usage": "gt project add <project_id> <issue_number>"},
         {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
+        {"name": "project remove", "description": "Remove an issue card from a board", "usage": "gt project remove <issue_number> --project-id <project_id> [--use-default]"},
         {"name": "pr list", "description": "List pull requests", "usage": "gt pr list [--state open|closed|all]"},
         {"name": "pr create", "description": "Create a pull request", "usage": "gt pr create --title \"...\" --head branch --base main [--body \"...\"]"},
         {"name": "pr reviews", "description": "List reviews on a pull request", "usage": "gt pr reviews <pr_number>"},
@@ -1107,6 +1135,63 @@ def main():
                     result={"message": "Issue moved on project board", **moved},
                     next_actions=[
                         {"command": f"gt project columns {args.project_id}", "description": "List project columns"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.project_action == "remove":
+                project_id = args.project_id
+                if not project_id:
+                    if args.use_default:
+                        project = client.find_default_kanban_project()
+                        project_id = project["id"]
+                    else:
+                        fail(
+                            full_cmd,
+                            "Project id is required; supply --project-id or --use-default to target the default kanban board.",
+                            fix="Pass --project-id <id> or use --use-default to find the Backlog/To Do/In Progress/Done board.",
+                            next_actions=[
+                                {"command": "gt project list", "description": "List repository project boards"},
+                                {"command": "gt project columns <project_id>", "description": "List columns for a board"},
+                            ],
+                            exit_code=1,
+                        )
+
+                cards = client.list_project_cards(project_id, issue_number=args.issue)
+                if not cards:
+                    fail(
+                        full_cmd,
+                        f"Issue #{args.issue} is not on project #{project_id}.",
+                        fix="Confirm the issue is added to the board before removing.",
+                        next_actions=[
+                            {"command": f"gt project cards {project_id}", "description": "List cards on this project"},
+                            {"command": "gt project list", "description": "List repository project boards"},
+                        ],
+                        exit_code=1,
+                    )
+                if len(cards) > 1:
+                    fail(
+                        full_cmd,
+                        f"Multiple cards for issue #{args.issue} found on project #{project_id}; refusing to remove.",
+                        fix="Inspect cards and clean up duplicates manually.",
+                        next_actions=[
+                            {"command": f"gt project cards {project_id}", "description": "List cards on this project"},
+                        ],
+                        exit_code=1,
+                    )
+
+                removed_from = cards[0].get("column_title")
+                removed = client.remove_issue_from_project(project_id, args.issue)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "message": "Issue removed from project board",
+                        **removed,
+                        "removed_from": removed_from,
+                    },
+                    next_actions=[
+                        {"command": f"gt project cards {project_id}", "description": "Confirm remaining cards"},
+                        {"command": f"gt project columns {project_id}", "description": "List project columns"},
                     ],
                 )
                 print(dump_yaml(payload))
