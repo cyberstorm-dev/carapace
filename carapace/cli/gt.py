@@ -33,6 +33,26 @@ class GTArgumentParser(argparse.ArgumentParser):
         raise ValueError(message)
 
 
+def fail(
+    command: str,
+    message: str,
+    *,
+    fix: Optional[str] = None,
+    next_actions: Optional[List[Dict[str, str]]] = None,
+    error_type: str = "ValidationError",
+    exit_code: int = 1,
+) -> None:
+    payload = envelope(
+        command=command,
+        ok=False,
+        error={"message": message, "type": error_type},
+        fix=fix,
+        next_actions=next_actions or [],
+    )
+    print(dump_yaml(payload))
+    sys.exit(exit_code)
+
+
 class GiteaClient:
     def __init__(self, url: str, token: str, repo: str):
         self.url = url.rstrip("/")
@@ -841,34 +861,25 @@ def main():
         validate_args(args)
         settings = resolve_connection_settings(args)
     except ValueError as e:
-        payload = envelope(
-            command="gt",
-            ok=False,
-            error={"message": str(e)},
+        fail(
+            " ".join(sys.argv) if sys.argv else "gt",
+            str(e),
             fix="Use -h/--help for the YAML command tree and check command names/arguments.",
         )
-        print(dump_yaml(payload))
-        sys.exit(1)
 
     if not settings["token"]:
-        payload = envelope(
-            command="gt",
-            ok=False,
-            error={"message": "Gitea token required"},
+        fail(
+            " ".join(sys.argv),
+            "Gitea token required",
             fix="Set GITEA_TOKEN, pass --token, or configure token/token_env in ~/.config/carapace/gt.toml.",
         )
-        print(dump_yaml(payload))
-        sys.exit(1)
 
     if not settings["repo"]:
-        payload = envelope(
-            command="gt",
-            ok=False,
-            error={"message": "Gitea repo required"},
+        fail(
+            " ".join(sys.argv),
+            "Gitea repo required",
             fix="Set GITEA_REPO, pass --repo, or configure owner/repo in ~/.config/carapace/gt.toml.",
         )
-        print(dump_yaml(payload))
-        sys.exit(1)
 
     client = GiteaClient(settings["url"], settings["token"], settings["repo"])
     if settings.get("web_cookie"):
