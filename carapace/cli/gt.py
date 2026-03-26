@@ -12,6 +12,7 @@ from carapace.hateoas import envelope, dump_yaml
 
 DEFAULT_GITEA_URL = "http://100.73.228.90:3000"
 DEFAULT_CONFIG_PATH = "~/.config/carapace/gt.toml"
+DEFAULT_KANBAN_COLUMNS = ("Backlog", "To Do", "In Progress", "Done")
 
 try:
     import tomllib  # py311+
@@ -201,6 +202,49 @@ class GiteaClient:
         projects.sort(key=lambda p: p["id"])
         return projects
 
+    def list_project_cards(
+        self, project_id: int, issue_number: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        html = self._web_request("GET", f"projects/{project_id}", accept="text/html")
+        if not isinstance(html, str):
+            raise RuntimeError("Unexpected non-HTML response while reading project board")
+
+        cards: List[Dict[str, Any]] = []
+        column_pattern = re.compile(
+            r'<div class="project-column"[^>]*data-id="(\d+)"[^>]*>(.*?)(?=<div class="project-column"|<div class="ui small modal" id="project-column-modal-edit"|$)',
+            flags=re.S,
+        )
+        issue_pattern = re.compile(
+            r'class="(?:issue-card|project-card)[^"]*"[^>]*data-(?:issue|issue-id)="(\d+)".*?href="/[^"]+/issues/(\d+)"',
+            flags=re.S,
+        )
+
+        for column_id_raw, block in column_pattern.findall(html):
+            column_id = int(column_id_raw)
+            title_match = re.search(
+                rf'data-modal-project-column-id="{column_id}".*?data-modal-project-column-title-input="([^"]+)"',
+                block,
+                flags=re.S,
+            )
+            if not title_match:
+                continue
+            column_title = title_match.group(1).strip()
+            for issue_id_raw, issue_number_raw in issue_pattern.findall(block):
+                parsed_issue_number = int(issue_number_raw)
+                if issue_number is not None and parsed_issue_number != issue_number:
+                    continue
+                cards.append(
+                    {
+                        "project_id": project_id,
+                        "column_id": column_id,
+                        "column_title": column_title,
+                        "issue_id": int(issue_id_raw),
+                        "issue_number": parsed_issue_number,
+                    }
+                )
+
+        return cards
+
     def add_issue_to_project(self, project_id: int, issue_index: int) -> Dict[str, Any]:
         issue_id = self._issue_internal_id(issue_index)
         payload = f"id={project_id}"
@@ -251,6 +295,20 @@ class GiteaClient:
             "column_id": target["id"],
             "column_title": target["title"],
         }
+
+    def find_default_kanban_project(self) -> Dict[str, Any]:
+        required = {self._column_key(name) for name in DEFAULT_KANBAN_COLUMNS}
+        for project in self.list_projects():
+            project_id = project.get("id")
+            if not isinstance(project_id, int):
+                continue
+            columns = self.list_project_columns(project_id)
+            available = {self._column_key(column["title"]) for column in columns if column.get("title")}
+            if required.issubset(available):
+                return project
+        raise RuntimeError(
+            "No default kanban project found with columns: Backlog, To Do, In Progress, Done"
+        )
 
     def list_issues(
         self,
@@ -329,6 +387,44 @@ class GiteaClient:
     def get_issue(self, issue_index: int, repo: Optional[str] = None) -> Dict[str, Any]:
         return self._request("GET", f"issues/{issue_index}", repo=repo or self.repo_full_name)
 
+    def list_issue_comments(self, issue_index: int) -> List[Dict[str, Any]]:
+        return self._request("GET", f"issues/{issue_index}/comments", repo=self.repo_full_name) or []
+
+    def create_issue_comment(self, issue_index: int, body: str) -> Dict[str, Any]:
+        return self._request("POST", f"issues/{issue_index}/comments", {"body": body}, repo=self.repo_full_name)
+
+    def update_issue_comment(self, comment_id: int, body: str) -> Dict[str, Any]:
+        return self._request("PATCH", f"issues/comments/{comment_id}", {"body": body}, repo=self.repo_full_name)
+
+    def upsert_issue_comment_marker(
+        self, issue_index: int, marker: str, body: str
+    ) -> Dict[str, Any]:
+        for comment in self.list_issue_comments(issue_index):
+            if marker in (comment.get("body") or ""):
+                updated = self.update_issue_comment(comment["id"], body)
+                return {"action": "updated", "comment_id": updated.get("id"), "comment": updated}
+
+        created = self.create_issue_comment(issue_index, body)
+        return {"action": "created", "comment_id": created.get("id"), "comment": created}
+
+    def assign_issue(self, issue_index: int, username: str) -> Dict[str, Any]:
+        return self.patch_issue(issue_index, {"assignees": [username]})
+
+    def unassign_issue(
+        self, issue_index: int, username: Optional[str] = None, all_assignees: bool = False
+    ) -> Dict[str, Any]:
+        if all_assignees:
+            return self.patch_issue(issue_index, {"assignees": []})
+        if not username:
+            raise ValueError("username required unless all_assignees=True")
+        issue = self.get_issue(issue_index, repo=self.repo_full_name)
+        remaining = [
+            assignee.get("login")
+            for assignee in issue.get("assignees", [])
+            if isinstance(assignee, dict) and assignee.get("login") != username
+        ]
+        return self.patch_issue(issue_index, {"assignees": remaining})
+
     def add_label(self, issue_index: int, label_id: int):
         # Gitea POST to /labels adds to the existing set
         payload = {"labels": [label_id]}
@@ -389,6 +485,54 @@ class GiteaClient:
             payload["MergeMessageField"] = commit_message
         return self._request("POST", f"pulls/{pull_index}/merge", payload)
 
+    def request_pull_reviewer(self, pull_index: int, username: str) -> Dict[str, Any]:
+        return self._request(
+            "POST", f"pulls/{pull_index}/requested_reviewers", {"reviewers": [username]}
+        )
+
+    def close_pull(self, pull_index: int) -> Dict[str, Any]:
+        return self._request("PATCH", f"pulls/{pull_index}", {"state": "closed"})
+
+    def transition_issue_state(self, issue_index: int, target_state: str) -> Dict[str, Any]:
+        normalized_state = normalize_issue_state_target(target_state)
+        if normalized_state in {"Closed", "Cancelled", "Duplicate"}:
+            self.patch_issue(issue_index, {"state": "closed"})
+            return {
+                "issue_number": issue_index,
+                "state": normalized_state,
+                "issue_state": "closed",
+            }
+
+        self.patch_issue(issue_index, {"state": "open"})
+        project = self.find_default_kanban_project()
+        project_id = project["id"]
+        cards = self.list_project_cards(project_id, issue_number=issue_index)
+        if not cards:
+            self.add_issue_to_project(project_id, issue_index)
+        moved = self.move_issue_to_project_column(project_id, issue_index, normalized_state)
+        return {"issue_number": issue_index, "state": normalized_state, **moved}
+
+
+def normalize_issue_state_target(value: str) -> str:
+    normalized = value.strip().lower()
+    aliases = {
+        "backlog": "Backlog",
+        "to do": "To Do",
+        "todo": "To Do",
+        "in progress": "In Progress",
+        "inprogress": "In Progress",
+        "done": "Done",
+        "closed": "Closed",
+        "cancelled": "Cancelled",
+        "canceled": "Cancelled",
+        "duplicate": "Duplicate",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            "state must be one of: Backlog, To Do, In Progress, Done, Closed, Cancelled, Duplicate"
+        )
+    return aliases[normalized]
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)
@@ -419,6 +563,37 @@ def build_parser() -> argparse.ArgumentParser:
     label_parser.add_argument("issue", type=int)
     label_parser.add_argument("label_id", type=int)
 
+    issue_parser = subparsers.add_parser("issue", help="Issue operations")
+    issue_subparsers = issue_parser.add_subparsers(dest="issue_action")
+
+    issue_comments = issue_subparsers.add_parser("comments", help="Issue comment operations")
+    issue_comments_subparsers = issue_comments.add_subparsers(dest="issue_comments_action")
+
+    issue_comments_list = issue_comments_subparsers.add_parser(
+        "list", help="List comments on an issue"
+    )
+    issue_comments_list.add_argument("issue", type=int)
+
+    issue_comments_upsert = issue_comments_subparsers.add_parser(
+        "upsert-marker", help="Create or update a marker comment"
+    )
+    issue_comments_upsert.add_argument("issue", type=int)
+    issue_comments_upsert.add_argument("--marker", required=True)
+    issue_comments_upsert.add_argument("--file")
+
+    issue_assign = issue_subparsers.add_parser("assign", help="Assign a user to an issue")
+    issue_assign.add_argument("issue", type=int)
+    issue_assign.add_argument("username")
+
+    issue_unassign = issue_subparsers.add_parser("unassign", help="Remove assignees from an issue")
+    issue_unassign.add_argument("issue", type=int)
+    issue_unassign.add_argument("username", nargs="?")
+    issue_unassign.add_argument("--all", action="store_true")
+
+    issue_state = issue_subparsers.add_parser("state", help="Move issue through kanban workflow")
+    issue_state.add_argument("issue", type=int)
+    issue_state.add_argument("--to", required=True)
+
     # Project board operations (web-routed in Gitea)
     project_parser = subparsers.add_parser("project", help="Project board operations")
     project_subparsers = project_parser.add_subparsers(dest="project_action")
@@ -442,6 +617,10 @@ def build_parser() -> argparse.ArgumentParser:
     project_move.add_argument(
         "--to", required=True, help="Target column name (e.g. 'To Do', 'In Progress')"
     )
+
+    project_cards = project_subparsers.add_parser("cards", help="List project cards and issue membership")
+    project_cards.add_argument("project_id", type=int)
+    project_cards.add_argument("--issue", type=int)
 
     # Pull request operations
     pr_parser = subparsers.add_parser("pr", help="Pull request operations")
@@ -481,12 +660,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pr_merge.add_argument("--title", help="Merge commit title")
     pr_merge.add_argument("--message", help="Merge commit message")
+
+    pr_request_reviewer = pr_subparsers.add_parser(
+        "request-reviewer", help="Request a reviewer on a pull request"
+    )
+    pr_request_reviewer.add_argument("pull", type=int, help="Pull request number")
+    pr_request_reviewer.add_argument("username")
+
+    pr_close = pr_subparsers.add_parser("close", help="Close a pull request without merging")
+    pr_close.add_argument("pull", type=int, help="Pull request number")
     return parser
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = build_parser()
     return parser.parse_args(argv)
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if args.command == "issue" and args.issue_action == "unassign":
+        if args.all and args.username:
+            raise ValueError("issue unassign does not accept both a username and --all")
+        if not args.all and not args.username:
+            raise ValueError("issue unassign requires a username or --all")
 
 
 def load_gt_config(path: str) -> Dict[str, Any]:
@@ -502,6 +698,17 @@ def load_gt_config(path: str) -> Dict[str, Any]:
     if remotes is None or not isinstance(remotes, dict):
         raw["remotes"] = {}
     return raw
+
+
+def read_body_from_args(file_path: Optional[str] = None) -> str:
+    if file_path:
+        with open(file_path, "r", encoding="utf-8") as fh:
+            body = fh.read()
+    else:
+        body = sys.stdin.read()
+    if not body:
+        raise ValueError("comment body required via --file or stdin")
+    return body
 
 
 def _repo_from_remote(remote_cfg: Dict[str, Any]) -> Optional[str]:
@@ -590,16 +797,24 @@ def main():
                         "description": "Remove dependency from issue",
                         "usage": "gt dep rm <issue_index> <dep_reference>",
                     },
+                    {"name": "issue comments list", "description": "List comments on an issue", "usage": "gt issue comments list <issue_number>"},
+                    {"name": "issue comments upsert-marker", "description": "Create or update a marker comment", "usage": "gt issue comments upsert-marker <issue_number> --marker \"## Codex Workpad\" [--file body.md]"},
+                    {"name": "issue assign", "description": "Assign a user to an issue", "usage": "gt issue assign <issue_number> <username>"},
+                    {"name": "issue unassign", "description": "Remove assignees from an issue", "usage": "gt issue unassign <issue_number> <username>|--all"},
+                    {"name": "issue state", "description": "Move issue through kanban workflow", "usage": "gt issue state <issue_number> --to \"In Progress\""},
                     {"name": "label add", "description": "Add label to issue", "usage": "gt label add <issue_index> <label_id>"},
                     {"name": "label rm", "description": "Remove label from issue", "usage": "gt label rm <issue_index> <label_id>"},
                     {"name": "project list", "description": "List repository project boards", "usage": "gt project list"},
                     {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
+                    {"name": "project cards", "description": "List project cards and issue membership", "usage": "gt project cards <project_id> [--issue <issue_number>]"},
                     {"name": "project add", "description": "Add an issue card to a board", "usage": "gt project add <project_id> <issue_number>"},
                     {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
                     {"name": "pr list", "description": "List pull requests", "usage": "gt pr list [--state open|closed|all]"},
                     {"name": "pr create", "description": "Create a pull request", "usage": "gt pr create --title \"...\" --head branch --base main [--body \"...\"]"},
                     {"name": "pr reviews", "description": "List reviews on a pull request", "usage": "gt pr reviews <pr_number>"},
                     {"name": "pr review", "description": "Submit a pull request review", "usage": "gt pr review <pr_number> --event APPROVED|REQUEST_CHANGES|COMMENT [--body \"...\"]"},
+                    {"name": "pr request-reviewer", "description": "Request a reviewer on a pull request", "usage": "gt pr request-reviewer <pr_number> <username>"},
+                    {"name": "pr close", "description": "Close a pull request without merging", "usage": "gt pr close <pr_number>"},
                     {"name": "pr merge", "description": "Merge a pull request", "usage": "gt pr merge <pr_number> [--method merge|rebase|rebase-merge|squash]"},
                 ]
             },
@@ -612,6 +827,7 @@ def main():
 
     args = parse_args()
     try:
+        validate_args(args)
         settings = resolve_connection_settings(args)
     except ValueError as e:
         payload = envelope(
@@ -718,6 +934,109 @@ def main():
                 )
                 print(dump_yaml(payload))
 
+        elif args.command == "issue":
+            if args.issue_action == "comments":
+                if args.issue_comments_action == "list":
+                    comments = client.list_issue_comments(args.issue)
+                    result_comments = [
+                        {
+                            "id": comment.get("id"),
+                            "body": comment.get("body"),
+                            "user": (comment.get("user") or {}).get("login"),
+                            "created_at": comment.get("created_at"),
+                            "updated_at": comment.get("updated_at"),
+                        }
+                        for comment in comments
+                    ]
+                    payload = envelope(
+                        command=full_cmd,
+                        ok=True,
+                        result={"issue": args.issue, "comments": result_comments, "count": len(result_comments)},
+                        next_actions=[
+                            {
+                                "command": f"gt issue comments upsert-marker {args.issue} --marker \"## Codex Workpad\"",
+                                "description": "Create or update a rolling workpad comment",
+                            }
+                        ],
+                    )
+                    print(dump_yaml(payload))
+                elif args.issue_comments_action == "upsert-marker":
+                    body = read_body_from_args(args.file)
+                    result = client.upsert_issue_comment_marker(args.issue, args.marker, body)
+                    payload = envelope(
+                        command=full_cmd,
+                        ok=True,
+                        result={"issue": args.issue, **result},
+                        next_actions=[
+                            {
+                                "command": f"gt issue comments list {args.issue}",
+                                "description": "List issue comments",
+                            }
+                        ],
+                    )
+                    print(dump_yaml(payload))
+                else:
+                    parser.print_help()
+            elif args.issue_action == "assign":
+                issue = client.assign_issue(args.issue, args.username)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "issue": {
+                            "number": issue.get("number"),
+                            "assignees": [
+                                assignee.get("login")
+                                for assignee in issue.get("assignees", [])
+                                if isinstance(assignee, dict)
+                            ],
+                        }
+                    },
+                    next_actions=[
+                        {
+                            "command": f"gt issue unassign {args.issue} {args.username}",
+                            "description": "Remove this assignee",
+                        }
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.issue_action == "unassign":
+                issue = client.unassign_issue(args.issue, args.username, all_assignees=args.all)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "issue": {
+                            "number": issue.get("number"),
+                            "assignees": [
+                                assignee.get("login")
+                                for assignee in issue.get("assignees", [])
+                                if isinstance(assignee, dict)
+                            ],
+                        }
+                    },
+                    next_actions=[
+                        {"command": f"gt issue assign {args.issue} <username>", "description": "Assign a user to this issue"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.issue_action == "state":
+                result = client.transition_issue_state(args.issue, args.to)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result=result,
+                    next_actions=[
+                        {
+                            "command": f"gt project cards {result.get('project_id')}" if result.get("project_id") else f"gt list --state closed",
+                            "description": "Inspect related board or issue state",
+                        }
+                    ],
+                )
+                print(dump_yaml(payload))
+            else:
+                parser.print_help()
+
         elif args.command == "project":
             if args.project_action == "list":
                 projects = client.list_projects()
@@ -760,6 +1079,17 @@ def main():
                     command=full_cmd,
                     ok=True,
                     result={"message": "Issue moved on project board", **moved},
+                    next_actions=[
+                        {"command": f"gt project columns {args.project_id}", "description": "List project columns"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.project_action == "cards":
+                cards = client.list_project_cards(args.project_id, issue_number=args.issue)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"project_id": args.project_id, "cards": cards, "count": len(cards)},
                     next_actions=[
                         {"command": f"gt project columns {args.project_id}", "description": "List project columns"},
                     ],
@@ -866,6 +1196,38 @@ def main():
                     ],
                 )
                 print(dump_yaml(payload))
+            elif args.pr_action == "request-reviewer":
+                review_request = client.request_pull_reviewer(args.pull, args.username)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "pull": args.pull,
+                        "requested_reviewers": [
+                            reviewer.get("login")
+                            for reviewer in review_request.get("requested_reviewers", [])
+                            if isinstance(reviewer, dict)
+                        ],
+                    },
+                    next_actions=[
+                        {"command": f"gt pr reviews {args.pull}", "description": "List current reviews"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "close":
+                closed = client.close_pull(args.pull)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "pull": args.pull,
+                        "state": closed.get("state"),
+                    },
+                    next_actions=[
+                        {"command": "gt pr list --state closed", "description": "List closed pull requests"},
+                    ],
+                )
+                print(dump_yaml(payload))
             else:
                 parser.print_help()
 
@@ -884,6 +1246,15 @@ def main():
             next_actions=[
                 {"command": "gt list", "description": "List current issues"},
             ]
+        )
+        print(dump_yaml(payload))
+        sys.exit(1)
+    except ValueError as e:
+        payload = envelope(
+            command=full_cmd,
+            ok=False,
+            error={"message": str(e), "type": type(e).__name__},
+            fix="Check the command arguments and valid workflow state names.",
         )
         print(dump_yaml(payload))
         sys.exit(1)

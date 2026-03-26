@@ -1,8 +1,10 @@
 import json
 import os
+import io
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+import yaml
 
 from carapace.cli import gt
 from carapace.cli.gt import GiteaClient
@@ -176,6 +178,162 @@ class TestGT(unittest.TestCase):
         payload = json.loads(req.data.decode("utf-8"))
         self.assertEqual(payload, {"Do": "squash", "MergeTitleField": "merge title"})
 
+    @patch("urllib.request.urlopen")
+    def test_request_pull_reviewer_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"requested_reviewers": [{"login": "builder"}]}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.request_pull_reviewer(7, "builder")
+
+        self.assertEqual(result["requested_reviewers"][0]["login"], "builder")
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(
+            req.get_full_url(),
+            "http://localhost/api/v1/repos/owner/repo/pulls/7/requested_reviewers",
+        )
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"reviewers": ["builder"]})
+
+    @patch("urllib.request.urlopen")
+    def test_close_pull_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"number": 7, "state": "closed"}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.close_pull(7)
+
+        self.assertEqual(result["state"], "closed")
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/pulls/7")
+        self.assertEqual(req.get_method(), "PATCH")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"state": "closed"})
+
+    @patch("urllib.request.urlopen")
+    def test_list_issue_comments_uses_expected_query(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps([{"id": 7, "body": "## Codex Workpad"}]).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        comments = self.client.list_issue_comments(12)
+
+        self.assertEqual(comments[0]["id"], 7)
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(
+            req.get_full_url(),
+            "http://localhost/api/v1/repos/owner/repo/issues/12/comments",
+        )
+
+    @patch("urllib.request.urlopen")
+    def test_upsert_marker_comment_updates_existing_comment(self, mock_urlopen):
+        mock_list = MagicMock()
+        mock_list.status = 200
+        mock_list.read.return_value = json.dumps(
+            [{"id": 44, "body": "## Codex Workpad\nold body"}]
+        ).encode("utf-8")
+        mock_list.__enter__.return_value = mock_list
+
+        mock_patch = MagicMock()
+        mock_patch.status = 200
+        mock_patch.read.return_value = json.dumps(
+            {"id": 44, "body": "## Codex Workpad\nnew body"}
+        ).encode("utf-8")
+        mock_patch.__enter__.return_value = mock_patch
+
+        mock_urlopen.side_effect = [mock_list, mock_patch]
+
+        result = self.client.upsert_issue_comment_marker(
+            12, "## Codex Workpad", "## Codex Workpad\nnew body"
+        )
+
+        self.assertEqual(result["action"], "updated")
+        self.assertEqual(result["comment_id"], 44)
+        req = mock_urlopen.call_args_list[-1][0][0]
+        self.assertEqual(
+            req.get_full_url(),
+            "http://localhost/api/v1/repos/owner/repo/issues/comments/44",
+        )
+        self.assertEqual(req.get_method(), "PATCH")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"body": "## Codex Workpad\nnew body"})
+
+    @patch("urllib.request.urlopen")
+    def test_upsert_marker_comment_creates_when_missing(self, mock_urlopen):
+        mock_list = MagicMock()
+        mock_list.status = 200
+        mock_list.read.return_value = json.dumps(
+            [{"id": 44, "body": "some other comment"}]
+        ).encode("utf-8")
+        mock_list.__enter__.return_value = mock_list
+
+        mock_post = MagicMock()
+        mock_post.status = 200
+        mock_post.read.return_value = json.dumps(
+            {"id": 55, "body": "## Codex Workpad\nnew body"}
+        ).encode("utf-8")
+        mock_post.__enter__.return_value = mock_post
+
+        mock_urlopen.side_effect = [mock_list, mock_post]
+
+        result = self.client.upsert_issue_comment_marker(
+            12, "## Codex Workpad", "## Codex Workpad\nnew body"
+        )
+
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(result["comment_id"], 55)
+        req = mock_urlopen.call_args_list[-1][0][0]
+        self.assertEqual(
+            req.get_full_url(),
+            "http://localhost/api/v1/repos/owner/repo/issues/12/comments",
+        )
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"body": "## Codex Workpad\nnew body"})
+
+    @patch("urllib.request.urlopen")
+    def test_assign_issue_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"number": 12, "assignees": [{"login": "builder"}]}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.assign_issue(12, "builder")
+
+        self.assertEqual(result["number"], 12)
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/issues/12")
+        self.assertEqual(req.get_method(), "PATCH")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"assignees": ["builder"]})
+
+    @patch("urllib.request.urlopen")
+    def test_unassign_issue_posts_empty_assignees_for_all(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"number": 12, "assignees": []}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.unassign_issue(12, all_assignees=True)
+
+        self.assertEqual(result["number"], 12)
+        req = mock_urlopen.call_args_list[0][0][0]
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"assignees": []})
+
+    def test_unassign_issue_requires_username_or_all_flag(self):
+        with self.assertRaises(ValueError):
+            self.client.unassign_issue(12)
+
     def test_load_gt_config_reads_named_remotes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg_path = os.path.join(tmpdir, "gt.toml")
@@ -315,6 +473,485 @@ token_env = "ACME_TOKEN"
         self.assertEqual(args.project_action, "add")
         self.assertEqual(args.project_id, 2)
         self.assertEqual(args.issue, 73)
+
+    def test_parse_args_supports_issue_comments_list(self):
+        args = gt.parse_args(["issue", "comments", "list", "12"])
+        self.assertEqual(args.command, "issue")
+        self.assertEqual(args.issue_action, "comments")
+        self.assertEqual(args.issue_comments_action, "list")
+        self.assertEqual(args.issue, 12)
+
+    def test_parse_args_supports_issue_comments_upsert_marker(self):
+        args = gt.parse_args(
+            [
+                "issue",
+                "comments",
+                "upsert-marker",
+                "12",
+                "--marker",
+                "## Codex Workpad",
+                "--file",
+                "body.md",
+            ]
+        )
+        self.assertEqual(args.command, "issue")
+        self.assertEqual(args.issue_action, "comments")
+        self.assertEqual(args.issue_comments_action, "upsert-marker")
+        self.assertEqual(args.issue, 12)
+        self.assertEqual(args.marker, "## Codex Workpad")
+        self.assertEqual(args.file, "body.md")
+
+    def test_parse_args_supports_issue_assign(self):
+        args = gt.parse_args(["issue", "assign", "12", "builder"])
+        self.assertEqual(args.command, "issue")
+        self.assertEqual(args.issue_action, "assign")
+        self.assertEqual(args.issue, 12)
+        self.assertEqual(args.username, "builder")
+
+    def test_parse_args_supports_issue_unassign_all(self):
+        args = gt.parse_args(["issue", "unassign", "12", "--all"])
+        self.assertEqual(args.command, "issue")
+        self.assertEqual(args.issue_action, "unassign")
+        self.assertEqual(args.issue, 12)
+        self.assertTrue(args.all)
+
+    def test_read_body_prefers_file(self):
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as fh:
+            fh.write("## Codex Workpad\nfrom file")
+            fh.flush()
+            with patch("sys.stdin.read", return_value="from stdin"):
+                body = gt.read_body_from_args(file_path=fh.name)
+        self.assertEqual(body, "## Codex Workpad\nfrom file")
+
+    def test_read_body_falls_back_to_stdin(self):
+        with patch("sys.stdin.read", return_value="## Codex Workpad\nfrom stdin"):
+            body = gt.read_body_from_args()
+        self.assertEqual(body, "## Codex Workpad\nfrom stdin")
+
+    def test_read_body_rejects_empty_input(self):
+        with patch("sys.stdin.read", return_value=""):
+            with self.assertRaises(ValueError):
+                gt.read_body_from_args()
+
+    def test_parse_args_supports_issue_state(self):
+        args = gt.parse_args(["issue", "state", "12", "--to", "In Progress"])
+        self.assertEqual(args.command, "issue")
+        self.assertEqual(args.issue_action, "state")
+        self.assertEqual(args.issue, 12)
+        self.assertEqual(args.to, "In Progress")
+
+    def test_parse_args_supports_pr_request_reviewer(self):
+        args = gt.parse_args(["pr", "request-reviewer", "7", "builder"])
+        self.assertEqual(args.command, "pr")
+        self.assertEqual(args.pr_action, "request-reviewer")
+        self.assertEqual(args.pull, 7)
+        self.assertEqual(args.username, "builder")
+
+    def test_parse_args_supports_pr_close(self):
+        args = gt.parse_args(["pr", "close", "7"])
+        self.assertEqual(args.command, "pr")
+        self.assertEqual(args.pr_action, "close")
+        self.assertEqual(args.pull, 7)
+
+    def test_parse_args_supports_project_cards(self):
+        args = gt.parse_args(["project", "cards", "3", "--issue", "42"])
+        self.assertEqual(args.command, "project")
+        self.assertEqual(args.project_action, "cards")
+        self.assertEqual(args.project_id, 3)
+        self.assertEqual(args.issue, 42)
+
+    def test_normalize_issue_state_target(self):
+        self.assertEqual(gt.normalize_issue_state_target("backlog"), "Backlog")
+        self.assertEqual(gt.normalize_issue_state_target("to do"), "To Do")
+        self.assertEqual(gt.normalize_issue_state_target("In Progress"), "In Progress")
+        self.assertEqual(gt.normalize_issue_state_target("duplicate"), "Duplicate")
+
+    def test_find_default_kanban_project_returns_board_with_standard_columns(self):
+        with patch.object(self.client, "list_projects", return_value=[{"id": 1}, {"id": 2}]):
+            with patch.object(
+                self.client,
+                "list_project_columns",
+                side_effect=[
+                    [{"title": "Todo"}],
+                    [
+                        {"title": "Backlog"},
+                        {"title": "To Do"},
+                        {"title": "In Progress"},
+                        {"title": "Done"},
+                    ],
+                ],
+            ):
+                project = self.client.find_default_kanban_project()
+        self.assertEqual(project["id"], 2)
+
+    def test_find_default_kanban_project_raises_when_missing(self):
+        with patch.object(self.client, "list_projects", return_value=[{"id": 1}]):
+            with patch.object(self.client, "list_project_columns", return_value=[{"title": "Todo"}]):
+                with self.assertRaises(RuntimeError):
+                    self.client.find_default_kanban_project()
+
+    def test_transition_issue_state_closes_terminal_states(self):
+        with patch.object(self.client, "patch_issue", return_value={"number": 12, "state": "closed"}) as mock_patch:
+            result = self.client.transition_issue_state(12, "Duplicate")
+        mock_patch.assert_called_once_with(12, {"state": "closed"})
+        self.assertEqual(result["state"], "Duplicate")
+        self.assertEqual(result["issue_state"], "closed")
+
+    def test_transition_issue_state_moves_issue_to_board_column(self):
+        with patch.object(self.client, "find_default_kanban_project", return_value={"id": 3, "name": "Sprint"}):
+            with patch.object(self.client, "list_project_cards", return_value=[]):
+                with patch.object(self.client, "add_issue_to_project", return_value={"project_id": 3}) as mock_add:
+                    with patch.object(self.client, "patch_issue", return_value={"number": 12, "state": "open"}) as mock_patch:
+                        with patch.object(
+                            self.client,
+                            "move_issue_to_project_column",
+                            return_value={"project_id": 3, "column_title": "In Progress"},
+                        ) as mock_move:
+                            result = self.client.transition_issue_state(12, "In Progress")
+        mock_add.assert_called_once_with(3, 12)
+        mock_patch.assert_called_once_with(12, {"state": "open"})
+        mock_move.assert_called_once_with(3, 12, "In Progress")
+        self.assertEqual(result["state"], "In Progress")
+        self.assertEqual(result["project_id"], 3)
+
+    @patch.object(gt.GiteaClient, "_web_request")
+    def test_list_project_cards_parses_issue_membership(self, mock_web_request):
+        mock_web_request.return_value = """
+<div class="project-column" data-id="11">
+  <div data-modal-project-column-id="11" data-modal-project-column-title-input="To Do"></div>
+  <div class="project-card" data-issue-id="467">
+    <a href="/owner/repo/issues/42">#42 Example</a>
+  </div>
+</div>
+<div class="project-column" data-id="12">
+  <div data-modal-project-column-id="12" data-modal-project-column-title-input="Done"></div>
+  <div class="project-card" data-issue-id="468">
+    <a href="/owner/repo/issues/43">#43 Finished</a>
+  </div>
+</div>
+"""
+
+        cards = self.client.list_project_cards(3)
+
+        self.assertEqual(
+            cards,
+            [
+                {
+                    "project_id": 3,
+                    "column_id": 11,
+                    "column_title": "To Do",
+                    "issue_id": 467,
+                    "issue_number": 42,
+                },
+                {
+                    "project_id": 3,
+                    "column_id": 12,
+                    "column_title": "Done",
+                    "issue_id": 468,
+                    "issue_number": 43,
+                },
+            ],
+        )
+
+    @patch.object(gt.GiteaClient, "_web_request")
+    def test_list_project_cards_filters_by_issue(self, mock_web_request):
+        mock_web_request.return_value = """
+<div class="project-column" data-id="11">
+  <div data-modal-project-column-id="11" data-modal-project-column-title-input="To Do"></div>
+  <div class="project-card" data-issue-id="467">
+    <a href="/owner/repo/issues/42">#42 Example</a>
+  </div>
+</div>
+"""
+
+        cards = self.client.list_project_cards(3, issue_number=42)
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["issue_number"], 42)
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "list_issue_comments")
+    def test_main_issue_comments_list_returns_comment_count(
+        self, mock_list_comments, mock_resolve_connection_settings
+    ):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_list_comments.return_value = [{"id": 7, "body": "## Codex Workpad"}]
+
+        with patch("sys.argv", ["gt", "issue", "comments", "list", "12"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["count"], 1)
+        self.assertEqual(payload["result"]["comments"][0]["id"], 7)
+
+    @patch.object(gt, "read_body_from_args")
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "upsert_issue_comment_marker")
+    def test_main_issue_comments_upsert_marker_returns_action_and_comment_id(
+        self,
+        mock_upsert,
+        mock_resolve_connection_settings,
+        mock_read_body,
+    ):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_read_body.return_value = "## Codex Workpad\nupdated"
+        mock_upsert.return_value = {"action": "updated", "comment_id": 44, "comment": {"id": 44}}
+
+        with patch(
+            "sys.argv",
+            [
+                "gt",
+                "issue",
+                "comments",
+                "upsert-marker",
+                "12",
+                "--marker",
+                "## Codex Workpad",
+            ],
+        ):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["action"], "updated")
+        self.assertEqual(payload["result"]["comment_id"], 44)
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "assign_issue")
+    def test_main_issue_assign_returns_updated_assignee(
+        self, mock_assign_issue, mock_resolve_connection_settings
+    ):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_assign_issue.return_value = {
+            "number": 12,
+            "assignees": [{"login": "builder"}],
+        }
+
+        with patch("sys.argv", ["gt", "issue", "assign", "12", "builder"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["issue"]["number"], 12)
+        self.assertEqual(payload["result"]["issue"]["assignees"], ["builder"])
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "assign_issue")
+    def test_main_issue_assign_surfaces_gitea_api_errors(
+        self, mock_assign_issue, mock_resolve_connection_settings
+    ):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_assign_issue.side_effect = gt.GiteaAPIError("user not found", 422, "Unprocessable Entity")
+
+        with patch("sys.argv", ["gt", "issue", "assign", "12", "missing-user"]):
+            with self.assertRaises(SystemExit) as exc:
+                with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                    gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["message"], "user not found")
+        self.assertEqual(payload["error"]["code"], 422)
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "transition_issue_state")
+    def test_main_issue_state_returns_normalized_state(
+        self, mock_transition_issue_state, mock_resolve_connection_settings
+    ):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_transition_issue_state.return_value = {
+            "issue_number": 12,
+            "state": "In Progress",
+            "project_id": 3,
+            "column_title": "In Progress",
+        }
+
+        with patch("sys.argv", ["gt", "issue", "state", "12", "--to", "In Progress"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["state"], "In Progress")
+        self.assertEqual(payload["result"]["project_id"], 3)
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "request_pull_reviewer")
+    def test_main_pr_request_reviewer_returns_requested_reviewer(
+        self, mock_request_reviewer, mock_resolve_connection_settings
+    ):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_request_reviewer.return_value = {"requested_reviewers": [{"login": "builder"}]}
+
+        with patch("sys.argv", ["gt", "pr", "request-reviewer", "7", "builder"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["pull"], 7)
+        self.assertEqual(payload["result"]["requested_reviewers"], ["builder"])
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "close_pull")
+    def test_main_pr_close_returns_closed_state(
+        self, mock_close_pull, mock_resolve_connection_settings
+    ):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_close_pull.return_value = {"number": 7, "state": "closed"}
+
+        with patch("sys.argv", ["gt", "pr", "close", "7"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["pull"], 7)
+        self.assertEqual(payload["result"]["state"], "closed")
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "list_project_cards")
+    def test_main_project_cards_returns_card_rows(
+        self, mock_list_project_cards, mock_resolve_connection_settings
+    ):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_list_project_cards.return_value = [
+            {
+                "project_id": 3,
+                "column_id": 11,
+                "column_title": "To Do",
+                "issue_id": 467,
+                "issue_number": 42,
+            }
+        ]
+
+        with patch("sys.argv", ["gt", "project", "cards", "3", "--issue", "42"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["project_id"], 3)
+        self.assertEqual(payload["result"]["cards"][0]["issue_number"], 42)
+
+    def test_parse_args_rejects_issue_unassign_username_with_all(self):
+        args = gt.parse_args(["issue", "unassign", "12", "builder", "--all"])
+        self.assertTrue(args.all)
+        self.assertEqual(args.username, "builder")
+
+    @patch.object(gt, "resolve_connection_settings")
+    def test_main_issue_unassign_conflict_returns_yaml_error(self, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+
+        with patch("sys.argv", ["gt", "issue", "unassign", "12", "builder", "--all"]):
+            with self.assertRaises(SystemExit) as exc:
+                with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                    gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("does not accept both", payload["error"]["message"])
+
+    def test_main_command_tree_mentions_new_commands(self):
+        with patch("sys.argv", ["gt"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        command_names = {entry["name"] for entry in payload["result"]["commands"]}
+        self.assertIn("issue state", command_names)
+        self.assertIn("project cards", command_names)
+        self.assertIn("pr request-reviewer", command_names)
+        self.assertIn("pr close", command_names)
+
+    @patch.object(gt.GiteaClient, "_web_request")
+    def test_list_project_cards_parses_live_issue_card_markup(self, mock_web_request):
+        mock_web_request.return_value = """
+<div class="project-column" data-id="8">
+  <a data-modal-project-column-id="8" data-modal-project-column-title-input="Backlog"></a>
+  <div class="ui cards" data-url="/cyberstorm/symphony/projects/2/8" data-project="2" data-board="8" id="board_8">
+    <div class="issue-card tw-break-anywhere tw-cursor-grab" data-issue="469">
+      <a class="issue-card-title muted issue-title tw-break-anywhere" href="/cyberstorm/symphony/issues/75">Example</a>
+    </div>
+  </div>
+</div>
+<div class="ui small modal" id="project-column-modal-edit"></div>
+"""
+
+        cards = self.client.list_project_cards(2)
+
+        self.assertEqual(
+            cards,
+            [
+                {
+                    "project_id": 2,
+                    "column_id": 8,
+                    "column_title": "Backlog",
+                    "issue_id": 469,
+                    "issue_number": 75,
+                }
+            ],
+        )
 
     @patch.object(gt.GiteaClient, "_web_request")
     @patch.object(gt.GiteaClient, "_issue_internal_id", return_value=467)
