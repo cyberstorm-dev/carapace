@@ -1,6 +1,10 @@
 import json
+import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+
+from carapace.cli import gt
 from carapace.cli.gt import GiteaClient
 
 
@@ -13,7 +17,6 @@ class TestGT(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_add_dependency_prevents_duplicate(self, mock_urlopen):
         """Should check for existing dependencies and not POST if present."""
-        # Mock GET returns an existing dependency #20
         mock_get = MagicMock()
         mock_get.status = 200
         mock_get.read.return_value = json.dumps([{"number": 20}]).encode("utf-8")
@@ -27,13 +30,11 @@ class TestGT(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_remove_dependency_sends_body(self, mock_urlopen):
         """GREEN: Should send IssueMeta in body of DELETE request."""
-        # Mock GET returns a dependency issue #20
         mock_get = MagicMock()
         mock_get.status = 200
         mock_get.read.return_value = json.dumps([{"number": 20}]).encode("utf-8")
         mock_get.__enter__.return_value = mock_get
 
-        # Mock DELETE response
         mock_del = MagicMock()
         mock_del.status = 204
         mock_del.__enter__.return_value = mock_del
@@ -42,13 +43,13 @@ class TestGT(unittest.TestCase):
 
         self.client.remove_dependency(10, 20)
 
-        # Verify the DELETE call
         last_call_req = mock_urlopen.call_args_list[-1][0][0]
-        # URL should NOT have /20 at the end
-        self.assertEqual(last_call_req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/issues/10/dependencies")
+        self.assertEqual(
+            last_call_req.get_full_url(),
+            "http://localhost/api/v1/repos/owner/repo/issues/10/dependencies",
+        )
         self.assertEqual(last_call_req.get_method(), "DELETE")
-        
-        # Body should contain the IssueMeta
+
         payload = json.loads(last_call_req.data.decode("utf-8"))
         self.assertEqual(payload, {"index": 20, "owner": "owner", "repo": "repo"})
 
@@ -174,6 +175,102 @@ class TestGT(unittest.TestCase):
         self.assertEqual(req.get_method(), "POST")
         payload = json.loads(req.data.decode("utf-8"))
         self.assertEqual(payload, {"Do": "squash", "MergeTitleField": "merge title"})
+
+    def test_load_gt_config_reads_named_remotes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = os.path.join(tmpdir, "gt.toml")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    """
+default_remote = "cyberstorm"
+
+[remotes.cyberstorm]
+url = "https://gitea.example"
+owner = "acme"
+repo = "widgets"
+token_env = "ACME_TOKEN"
+"""
+                )
+            config = gt.load_gt_config(cfg_path)
+            self.assertEqual(config.get("default_remote"), "cyberstorm")
+            self.assertIn("cyberstorm", config.get("remotes", {}))
+
+    def test_resolve_connection_settings_uses_default_remote_from_config(self):
+        config = {
+            "default_remote": "cyberstorm",
+            "remotes": {
+                "cyberstorm": {
+                    "url": "https://gitea.example",
+                    "owner": "acme",
+                    "repo": "widgets",
+                    "token_env": "ACME_TOKEN",
+                }
+            },
+        }
+        args = gt.parse_args([])
+        with patch.dict(os.environ, {"ACME_TOKEN": "from-config"}, clear=True):
+            settings = gt.resolve_connection_settings(args, config=config)
+        self.assertEqual(settings["url"], "https://gitea.example")
+        self.assertEqual(settings["repo"], "acme/widgets")
+        self.assertEqual(settings["token"], "from-config")
+
+    def test_resolve_connection_settings_prefers_env_over_config(self):
+        config = {
+            "default_remote": "cyberstorm",
+            "remotes": {
+                "cyberstorm": {
+                    "url": "https://gitea.example",
+                    "owner": "acme",
+                    "repo": "widgets",
+                    "token_env": "ACME_TOKEN",
+                }
+            },
+        }
+        args = gt.parse_args([])
+        env = {
+            "GITEA_URL": "https://env.example",
+            "GITEA_REPO": "env/repo",
+            "GITEA_TOKEN": "env-token",
+            "ACME_TOKEN": "from-config",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            settings = gt.resolve_connection_settings(args, config=config)
+        self.assertEqual(settings["url"], "https://env.example")
+        self.assertEqual(settings["repo"], "env/repo")
+        self.assertEqual(settings["token"], "env-token")
+
+    def test_resolve_connection_settings_prefers_cli_over_env_and_config(self):
+        config = {
+            "default_remote": "cyberstorm",
+            "remotes": {
+                "cyberstorm": {
+                    "url": "https://gitea.example",
+                    "owner": "acme",
+                    "repo": "widgets",
+                    "token_env": "ACME_TOKEN",
+                }
+            },
+        }
+        args = gt.parse_args([
+            "--url",
+            "https://cli.example",
+            "--repo",
+            "cli/repo",
+            "--token",
+            "cli-token",
+        ])
+        env = {
+            "GITEA_URL": "https://env.example",
+            "GITEA_REPO": "env/repo",
+            "GITEA_TOKEN": "env-token",
+            "ACME_TOKEN": "from-config",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            settings = gt.resolve_connection_settings(args, config=config)
+        self.assertEqual(settings["url"], "https://cli.example")
+        self.assertEqual(settings["repo"], "cli/repo")
+        self.assertEqual(settings["token"], "cli-token")
+
 
 if __name__ == "__main__":
     unittest.main()

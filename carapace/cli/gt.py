@@ -10,6 +10,12 @@ from carapace.issue_ref import IssueRef, parse_dependency_refs, parse_issue_ref
 from carapace.hateoas import envelope, dump_yaml
 
 DEFAULT_GITEA_URL = "http://100.73.228.90:3000"
+DEFAULT_CONFIG_PATH = "~/.config/carapace/gt.toml"
+
+try:
+    import tomllib  # py311+
+except ImportError:  # pragma: no cover - py<311
+    import tomli as tomllib
 
 
 class GiteaAPIError(Exception):
@@ -360,11 +366,13 @@ class GiteaClient:
         return self._request("POST", f"pulls/{pull_index}/merge", payload)
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)
-    parser.add_argument("--url", default=os.environ.get("GITEA_URL", DEFAULT_GITEA_URL))
-    parser.add_argument("--token", default=os.environ.get("GITEA_TOKEN"))
-    parser.add_argument("--repo", default=os.environ.get("GITEA_REPO", "openclaw/nisto-home"))
+    parser.add_argument("--url")
+    parser.add_argument("--token")
+    parser.add_argument("--repo")
+    parser.add_argument("--remote")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -386,6 +394,89 @@ def main():
     label_parser.add_argument("action", choices=["add", "rm"])
     label_parser.add_argument("issue", type=int)
     label_parser.add_argument("label_id", type=int)
+    return parser
+
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(argv)
+
+
+def load_gt_config(path: str) -> Dict[str, Any]:
+    expanded = os.path.expanduser(path)
+    if not os.path.exists(expanded):
+        return {}
+
+    with open(expanded, "rb") as fh:
+        raw = tomllib.load(fh)
+    if not isinstance(raw, dict):
+        return {}
+    remotes = raw.get("remotes")
+    if remotes is None or not isinstance(remotes, dict):
+        raw["remotes"] = {}
+    return raw
+
+
+def _repo_from_remote(remote_cfg: Dict[str, Any]) -> Optional[str]:
+    repo = remote_cfg.get("repo")
+    if isinstance(repo, str) and "/" in repo:
+        return repo
+    owner = remote_cfg.get("owner")
+    if isinstance(owner, str) and isinstance(repo, str) and owner and repo:
+        return f"{owner}/{repo}"
+    return None
+
+
+def resolve_connection_settings(args: argparse.Namespace, config: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
+    env = os.environ
+    config_data = config if config is not None else load_gt_config(args.config)
+
+    remotes = config_data.get("remotes", {}) if isinstance(config_data, dict) else {}
+    remote_name = args.remote or (config_data.get("default_remote") if isinstance(config_data, dict) else None)
+    remote_cfg = {}
+    if remote_name:
+        remote_cfg = remotes.get(remote_name, {})
+        if not isinstance(remote_cfg, dict):
+            raise ValueError(
+                f"Remote '{remote_name}' not found in {os.path.expanduser(args.config)} under [remotes.{remote_name}]"
+            )
+        if not remote_cfg:
+            raise ValueError(
+                f"Remote '{remote_name}' not found in {os.path.expanduser(args.config)} under [remotes.{remote_name}]"
+            )
+
+    cfg_token = remote_cfg.get("token")
+    token_env_name = remote_cfg.get("token_env")
+    cfg_token_env = env.get(token_env_name) if isinstance(token_env_name, str) and token_env_name else None
+
+    settings: Dict[str, Optional[str]] = {
+        "url": remote_cfg.get("url") if isinstance(remote_cfg.get("url"), str) else None,
+        "repo": _repo_from_remote(remote_cfg),
+        "token": cfg_token if isinstance(cfg_token, str) else cfg_token_env,
+        "remote": remote_name,
+    }
+
+    if env.get("GITEA_URL"):
+        settings["url"] = env.get("GITEA_URL")
+    if env.get("GITEA_REPO"):
+        settings["repo"] = env.get("GITEA_REPO")
+    if env.get("GITEA_TOKEN"):
+        settings["token"] = env.get("GITEA_TOKEN")
+
+    if args.url:
+        settings["url"] = args.url
+    if args.repo:
+        settings["repo"] = args.repo
+    if args.token:
+        settings["token"] = args.token
+
+    if not settings["url"]:
+        settings["url"] = DEFAULT_GITEA_URL
+    return settings
+
+
+def main():
+    parser = build_parser()
 
     # Project board operations (web-routed in Gitea)
     project_parser = subparsers.add_parser("project", help="Project board operations")
@@ -482,19 +573,40 @@ def main():
         print(dump_yaml(payload))
         return
 
-    args = parser.parse_args()
-
-    if not args.token:
+    args = parse_args()
+    try:
+        settings = resolve_connection_settings(args)
+    except ValueError as e:
         payload = envelope(
             command="gt",
             ok=False,
-            error={"message": "GITEA_TOKEN required"},
-            fix="Set GITEA_TOKEN environment variable or use --token flag.",
+            error={"message": str(e)},
+            fix=f"Create or update {os.path.expanduser(args.config)} and set a valid remote.",
         )
         print(dump_yaml(payload))
         sys.exit(1)
 
-    client = GiteaClient(args.url, args.token, args.repo)
+    if not settings["token"]:
+        payload = envelope(
+            command="gt",
+            ok=False,
+            error={"message": "Gitea token required"},
+            fix="Set GITEA_TOKEN, pass --token, or configure token/token_env in ~/.config/carapace/gt.toml.",
+        )
+        print(dump_yaml(payload))
+        sys.exit(1)
+
+    if not settings["repo"]:
+        payload = envelope(
+            command="gt",
+            ok=False,
+            error={"message": "Gitea repo required"},
+            fix="Set GITEA_REPO, pass --repo, or configure owner/repo in ~/.config/carapace/gt.toml.",
+        )
+        print(dump_yaml(payload))
+        sys.exit(1)
+
+    client = GiteaClient(settings["url"], settings["token"], settings["repo"])
     full_cmd = " ".join(sys.argv)
 
     try:
