@@ -924,6 +924,44 @@ token_env = "ACME_TOKEN"
         self.assertIn("pr request-reviewer", command_names)
         self.assertIn("pr close", command_names)
 
+    def test_main_root_short_help_returns_yaml(self):
+        with patch("sys.argv", ["gt", "-h"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["command"], "gt")
+
+    def test_main_root_long_help_returns_yaml(self):
+        with patch("sys.argv", ["gt", "--help"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["command"], "gt")
+
+    def test_main_no_command_with_global_flag_returns_yaml(self):
+        with patch("sys.argv", ["gt", "--config", "/tmp/example.toml"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["command"], "gt")
+
+    def test_main_invalid_subcommand_returns_yaml_error(self):
+        with patch("sys.argv", ["gt", "issue", "frob"]):
+            with self.assertRaises(SystemExit) as exc:
+                with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                    gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("invalid choice", payload["error"]["message"])
+
     @patch.object(gt.GiteaClient, "_web_request")
     def test_list_project_cards_parses_live_issue_card_markup(self, mock_web_request):
         mock_web_request.return_value = """
