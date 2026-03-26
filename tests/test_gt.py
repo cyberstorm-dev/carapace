@@ -923,6 +923,100 @@ token_env = "ACME_TOKEN"
         self.assertEqual(payload["error"]["code"], 403)
         self.assertEqual(payload["error"]["reason"], "Forbidden")
 
+    # PR label management ----------------------------------------------
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "add_label")
+    def test_pr_label_add_calls_client(self, mock_add_label, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_add_label.return_value = {"labels": [3], "number": 12}
+
+        with patch("sys.argv", ["gt", "pr", "label", "add", "12", "3"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        mock_add_label.assert_called_once_with(12, 3)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertIn("labels", payload["result"])
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "remove_label")
+    def test_pr_label_remove_calls_client(self, mock_remove_label, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_remove_label.return_value = {"labels": [], "number": 12}
+
+        with patch("sys.argv", ["gt", "pr", "label", "rm", "12", "3"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        mock_remove_label.assert_called_once_with(12, 3)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertIn("labels", payload["result"])
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "add_label")
+    def test_pr_label_add_surfaces_api_error(self, mock_add_label, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_add_label.side_effect = gt.GiteaAPIError("not found", 404, "Not Found")
+
+        with patch("sys.argv", ["gt", "pr", "label", "add", "12", "3"]):
+            with self.assertRaises(SystemExit) as exc, patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["message"], "not found")
+        self.assertEqual(payload["error"]["code"], 404)
+        self.assertEqual(payload["error"]["reason"], "Not Found")
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "list_pulls")
+    def test_pr_list_filters_by_labels(self, mock_list_pulls, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_list_pulls.return_value = [
+            {"number": 5, "title": "Fix", "state": "open", "labels": [
+                {"id": 3, "name": "bug"}
+            ]}
+        ]
+
+        with patch("sys.argv", ["gt", "pr", "list", "--labels", "bug,needs-review"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        mock_list_pulls.assert_called_once()
+        _, kwargs = mock_list_pulls.call_args
+        self.assertEqual(kwargs.get("labels"), "bug,needs-review")
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"].get("applied_labels"), "bug,needs-review")
+
     @patch.object(gt, "resolve_connection_settings")
     @patch.object(gt.GiteaClient, "transition_issue_state")
     def test_main_issue_state_returns_normalized_state(

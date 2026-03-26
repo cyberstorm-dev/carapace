@@ -690,6 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr_list.add_argument("--state", default="open", choices=["open", "closed", "all"])
     pr_list.add_argument("--base", help="Filter by base branch")
     pr_list.add_argument("--head", help="Filter by head branch")
+    pr_list.add_argument("--labels", help="Comma-separated label names")
 
     pr_create = pr_subparsers.add_parser("create", help="Create a pull request")
     pr_create.add_argument("--title", required=True, help="PR title")
@@ -726,6 +727,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pr_request_reviewer.add_argument("pull", type=int, help="Pull request number")
     pr_request_reviewer.add_argument("username")
+
+    pr_label = pr_subparsers.add_parser("label", help="Manage pull request labels")
+    pr_label_sub = pr_label.add_subparsers(dest="pr_label_action", parser_class=GTArgumentParser)
+    pr_label_add = pr_label_sub.add_parser("add", help="Add label to pull request")
+    pr_label_add.add_argument("pull", type=int, help="Pull request number")
+    pr_label_add.add_argument("label_id", type=int, help="Label id")
+    pr_label_rm = pr_label_sub.add_parser("rm", help="Remove label from pull request")
+    pr_label_rm.add_argument("pull", type=int, help="Pull request number")
+    pr_label_rm.add_argument("label_id", type=int, help="Label id")
 
     pr_close = pr_subparsers.add_parser("close", help="Close a pull request without merging")
     pr_close.add_argument("pull", type=int, help="Pull request number")
@@ -783,6 +793,8 @@ def command_tree() -> List[Dict[str, str]]:
         {"name": "issue state", "description": "Move issue through kanban workflow", "usage": "gt issue state <issue_number> --to \"In Progress\""},
         {"name": "label add", "description": "Add label to issue", "usage": "gt label add <issue_index> <label_id>"},
         {"name": "label rm", "description": "Remove label from issue", "usage": "gt label rm <issue_index> <label_id>"},
+        {"name": "pr label add", "description": "Add label to pull request", "usage": "gt pr label add <pull_number> <label_id>"},
+        {"name": "pr label rm", "description": "Remove label from pull request", "usage": "gt pr label rm <pull_number> <label_id>"},
         {"name": "project list", "description": "List repository project boards", "usage": "gt project list"},
         {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
         {"name": "project cards", "description": "List project cards and issue membership", "usage": "gt project cards <project_id> [--issue <issue_number>]"},
@@ -1211,7 +1223,7 @@ def main():
 
         elif args.command == "pr":
             if args.pr_action == "list":
-                pulls = client.list_pulls(state=args.state, base=args.base, head=args.head)
+                pulls = client.list_pulls(state=args.state, base=args.base, head=args.head, labels=getattr(args, "labels", None))
                 result_pulls = [
                     {
                         "number": p.get("number"),
@@ -1227,7 +1239,7 @@ def main():
                 payload = envelope(
                     command=full_cmd,
                     ok=True,
-                    result={"pulls": result_pulls, "count": len(result_pulls)},
+                    result={"pulls": result_pulls, "count": len(result_pulls), "applied_labels": getattr(args, "labels", None)},
                     next_actions=[
                         {"command": "gt pr create --title \"...\" --head feature-branch --base main", "description": "Create a new pull request"},
                     ],
@@ -1325,6 +1337,37 @@ def main():
                     ],
                 )
                 print(dump_yaml(payload))
+            elif args.pr_action == "label":
+                if args.pr_label_action == "add":
+                    result = client.add_label(args.pull, args.label_id)
+                    payload = envelope(
+                        command=full_cmd,
+                        ok=True,
+                        result={
+                            "pull": args.pull,
+                            "labels": result.get("labels") if isinstance(result, dict) else None,
+                        },
+                        next_actions=[
+                            {"command": f"gt pr list --labels {args.label_id}", "description": "List PRs with this label"},
+                        ],
+                    )
+                    print(dump_yaml(payload))
+                elif args.pr_label_action == "rm":
+                    result = client.remove_label(args.pull, args.label_id)
+                    payload = envelope(
+                        command=full_cmd,
+                        ok=True,
+                        result={
+                            "pull": args.pull,
+                            "labels": result.get("labels") if isinstance(result, dict) else None,
+                        },
+                        next_actions=[
+                            {"command": f"gt pr label add {args.pull} {args.label_id}", "description": "Re-add this label"},
+                        ],
+                    )
+                    print(dump_yaml(payload))
+                else:
+                    parser.print_help()
             elif args.pr_action == "close":
                 closed = client.close_pull(args.pull)
                 payload = envelope(
