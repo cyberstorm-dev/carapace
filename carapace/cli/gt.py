@@ -41,11 +41,15 @@ def fail(
     next_actions: Optional[List[Dict[str, str]]] = None,
     error_type: str = "ValidationError",
     exit_code: int = 1,
+    error_extra: Optional[Dict[str, Any]] = None,
 ) -> None:
+    error_payload: Dict[str, Any] = {"message": message, "type": error_type}
+    if error_extra:
+        error_payload.update(error_extra)
     payload = envelope(
         command=command,
         ok=False,
-        error={"message": message, "type": error_type},
+        error=error_payload,
         fix=fix,
         next_actions=next_actions or [],
     )
@@ -1256,39 +1260,31 @@ def main():
         else:
             parser.print_help()
     except GiteaAPIError as e:
-        payload = envelope(
-            command=full_cmd,
-            ok=False,
-            error={
-                "message": e.message,
-                "code": e.code,
-                "reason": e.reason,
-            },
-            fix="Verify your GITEA_TOKEN and issue/dependency indices. Ensure you're not adding a duplicate dependency.",
-            next_actions=[
-                {"command": "gt list", "description": "List current issues"},
-            ]
+        fail(
+            full_cmd,
+            e.message,
+            error_type=type(e).__name__,
+            error_extra={"code": e.code, "reason": e.reason},
+            fix="Verify token/repo and inputs; Gitea returned an error.",
+            next_actions=[{"command": "gt list", "description": "List current issues"}],
+            exit_code=1,
         )
-        print(dump_yaml(payload))
-        sys.exit(1)
     except ValueError as e:
-        payload = envelope(
-            command=full_cmd,
-            ok=False,
-            error={"message": str(e), "type": type(e).__name__},
-            fix="Check the command arguments and valid workflow state names.",
+        fail(
+            full_cmd,
+            str(e),
+            error_type=type(e).__name__,
+            fix="Check the command arguments; use -h/--help for the YAML command tree.",
+            exit_code=1,
         )
-        print(dump_yaml(payload))
-        sys.exit(1)
     except Exception as e:
-        payload = envelope(
-            command=full_cmd,
-            ok=False,
-            error={"message": str(e), "type": type(e).__name__},
+        fail(
+            full_cmd,
+            str(e),
+            error_type=type(e).__name__,
             fix="Check network connectivity and Gitea URL.",
+            exit_code=1,
         )
-        print(dump_yaml(payload))
-        sys.exit(1)
 
 
 if __name__ == "__main__":
