@@ -535,11 +535,15 @@ def resolve_connection_settings(args: argparse.Namespace, config: Optional[Dict[
     cfg_token = remote_cfg.get("token")
     token_env_name = remote_cfg.get("token_env")
     cfg_token_env = env.get(token_env_name) if isinstance(token_env_name, str) and token_env_name else None
+    cfg_web_cookie = remote_cfg.get("web_cookie")
+    web_cookie_env_name = remote_cfg.get("web_cookie_env")
+    cfg_web_cookie_env = env.get(web_cookie_env_name) if isinstance(web_cookie_env_name, str) and web_cookie_env_name else None
 
     settings: Dict[str, Optional[str]] = {
         "url": remote_cfg.get("url") if isinstance(remote_cfg.get("url"), str) else None,
         "repo": _repo_from_remote(remote_cfg),
         "token": cfg_token if isinstance(cfg_token, str) else cfg_token_env,
+        "web_cookie": cfg_web_cookie if isinstance(cfg_web_cookie, str) else cfg_web_cookie_env,
         "remote": remote_name,
     }
 
@@ -549,6 +553,8 @@ def resolve_connection_settings(args: argparse.Namespace, config: Optional[Dict[
         settings["repo"] = env.get("GITEA_REPO")
     if env.get("GITEA_TOKEN"):
         settings["token"] = env.get("GITEA_TOKEN")
+    if env.get("GITEA_WEB_COOKIE"):
+        settings["web_cookie"] = env.get("GITEA_WEB_COOKIE")
 
     if args.url:
         settings["url"] = args.url
@@ -638,6 +644,8 @@ def main():
         sys.exit(1)
 
     client = GiteaClient(settings["url"], settings["token"], settings["repo"])
+    if settings.get("web_cookie"):
+        os.environ["GITEA_WEB_COOKIE"] = settings["web_cookie"]
     full_cmd = " ".join(sys.argv)
 
     try:
