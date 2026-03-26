@@ -781,6 +781,147 @@ token_env = "ACME_TOKEN"
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["message"], "user not found")
         self.assertEqual(payload["error"]["code"], 422)
+        self.assertEqual(payload["error"]["reason"], "Unprocessable Entity")
+
+    # Project remove ---------------------------------------------------
+
+    @patch.object(gt, "resolve_connection_settings")
+    def test_project_remove_requires_project_or_use_default(self, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+
+        with patch("sys.argv", ["gt", "project", "remove", "7"]):
+            with self.assertRaises(SystemExit) as exc, patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("project id", payload["error"]["message"].lower())
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "find_default_kanban_project")
+    def test_project_remove_default_missing(self, mock_find_default, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": None,
+            "remote": None,
+        }
+        mock_find_default.side_effect = ValueError("No default kanban project found with columns: Backlog, To Do, In Progress, Done")
+
+        with patch("sys.argv", ["gt", "project", "remove", "7", "--use-default"]):
+            with self.assertRaises(SystemExit) as exc, patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("default kanban", payload["error"]["message"].lower())
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "list_project_cards")
+    def test_project_remove_missing_card(self, mock_list_cards, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": "cookie",
+            "remote": None,
+        }
+        mock_list_cards.return_value = []
+
+        with patch("sys.argv", ["gt", "project", "remove", "7", "--project-id", "3"]):
+            with self.assertRaises(SystemExit) as exc, patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("not on project", payload["error"]["message"].lower())
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "list_project_cards")
+    def test_project_remove_duplicate_cards(self, mock_list_cards, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": "cookie",
+            "remote": None,
+        }
+        mock_list_cards.return_value = [
+            {"issue": 7, "project_id": 3, "column_title": "Backlog"},
+            {"issue": 7, "project_id": 3, "column_title": "To Do"},
+        ]
+
+        with patch("sys.argv", ["gt", "project", "remove", "7", "--project-id", "3"]):
+            with self.assertRaises(SystemExit) as exc, patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("multiple cards", payload["error"]["message"].lower())
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "list_project_cards")
+    @patch.object(gt.GiteaClient, "remove_issue_from_project")
+    def test_project_remove_success(self, mock_remove, mock_list_cards, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": "cookie",
+            "remote": None,
+        }
+        mock_list_cards.return_value = [
+            {"issue": 7, "project_id": 3, "column_title": "Backlog"}
+        ]
+        mock_remove.return_value = {"project_id": 3, "issue": 7}
+
+        with patch("sys.argv", ["gt", "project", "remove", "7", "--project-id", "3"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["project_id"], 3)
+        self.assertEqual(payload["result"]["issue"], 7)
+        self.assertEqual(payload["result"]["removed_from"], "Backlog")
+
+    @patch.object(gt, "resolve_connection_settings")
+    @patch.object(gt.GiteaClient, "list_project_cards")
+    @patch.object(gt.GiteaClient, "remove_issue_from_project")
+    def test_project_remove_surfaces_api_error(self, mock_remove, mock_list_cards, mock_resolve_connection_settings):
+        mock_resolve_connection_settings.return_value = {
+            "url": "http://localhost",
+            "repo": "owner/repo",
+            "token": "test-token",
+            "web_cookie": "cookie",
+            "remote": None,
+        }
+        mock_list_cards.return_value = [
+            {"issue": 7, "project_id": 3, "column_title": "Backlog"}
+        ]
+        mock_remove.side_effect = gt.GiteaAPIError("forbidden", 403, "Forbidden")
+
+        with patch("sys.argv", ["gt", "project", "remove", "7", "--project-id", "3"]):
+            with self.assertRaises(SystemExit) as exc, patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                gt.main()
+
+        self.assertEqual(exc.exception.code, 1)
+        payload = yaml.safe_load(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["message"], "forbidden")
+        self.assertEqual(payload["error"]["code"], 403)
+        self.assertEqual(payload["error"]["reason"], "Forbidden")
 
     @patch.object(gt, "resolve_connection_settings")
     @patch.object(gt.GiteaClient, "transition_issue_state")
