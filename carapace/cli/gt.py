@@ -327,26 +327,40 @@ class GiteaClient:
 
     def remove_issue_from_project(self, project_id: int, issue_index: int) -> Dict[str, Any]:
         issue_id = self._issue_internal_id(issue_index)
-        payload = f"id={project_id}"
+        clear_payload = "id="
+        scoped_payload = f"id={project_id}"
         try:
-            # Gitea 1.20/1.21 style: /issues/projects/delete
+            # Gitea 1.25 style: clear project membership via shared update endpoint.
             self._web_request(
                 "POST",
-                f"issues/projects/delete?issue_ids={issue_id}",
-                payload,
+                f"issues/projects?issue_ids={issue_id}",
+                clear_payload,
                 accept="application/json",
                 content_type="application/x-www-form-urlencoded; charset=UTF-8",
             )
         except GiteaAPIError as e:
             if e.code == 404:
-                # Newer Gitea renders project-scoped delete endpoint
-                self._web_request(
-                    "POST",
-                    f"issues/projects/{project_id}/delete?issue_ids={issue_id}",
-                    payload,
-                    accept="application/json",
-                    content_type="application/x-www-form-urlencoded; charset=UTF-8",
-                )
+                try:
+                    # Gitea 1.20/1.21 style: /issues/projects/delete
+                    self._web_request(
+                        "POST",
+                        f"issues/projects/delete?issue_ids={issue_id}",
+                        scoped_payload,
+                        accept="application/json",
+                        content_type="application/x-www-form-urlencoded; charset=UTF-8",
+                    )
+                except GiteaAPIError as nested:
+                    if nested.code == 404:
+                        # Some deployments expose a project-scoped delete endpoint.
+                        self._web_request(
+                            "POST",
+                            f"issues/projects/{project_id}/delete?issue_ids={issue_id}",
+                            scoped_payload,
+                            accept="application/json",
+                            content_type="application/x-www-form-urlencoded; charset=UTF-8",
+                        )
+                    else:
+                        raise
             else:
                 raise
         return {

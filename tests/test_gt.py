@@ -924,7 +924,7 @@ token_env = "ACME_TOKEN"
         self.assertEqual(payload["error"]["reason"], "Forbidden")
 
     @patch.object(gt, "resolve_connection_settings")
-    def test_project_remove_falls_back_to_project_scoped_delete(self, mock_resolve_connection_settings):
+    def test_project_remove_fallback_chain_uses_membership_clear_first(self, mock_resolve_connection_settings):
         mock_resolve_connection_settings.return_value = {
             "url": "http://localhost",
             "repo": "owner/repo",
@@ -937,17 +937,20 @@ token_env = "ACME_TOKEN"
         client._issue_internal_id = MagicMock(return_value=483)
 
         first_fail = gt.GiteaAPIError("not found", 404, "Not Found")
-        client._web_request = MagicMock(side_effect=[first_fail, {"ok": True}])
+        second_fail = gt.GiteaAPIError("not found", 404, "Not Found")
+        client._web_request = MagicMock(side_effect=[first_fail, second_fail, {"ok": True}])
 
         removed = client.remove_issue_from_project(2, 89)
 
         self.assertEqual(removed["project_id"], 2)
         self.assertEqual(removed["issue_number"], 89)
-        self.assertEqual(client._web_request.call_count, 2)
+        self.assertEqual(client._web_request.call_count, 3)
         first_call = client._web_request.call_args_list[0]
         second_call = client._web_request.call_args_list[1]
-        self.assertIn("issues/projects/delete", first_call[0][1])
-        self.assertIn("issues/projects/2/delete", second_call[0][1])
+        third_call = client._web_request.call_args_list[2]
+        self.assertIn("issues/projects?issue_ids=483", first_call[0][1])
+        self.assertIn("issues/projects/delete?issue_ids=483", second_call[0][1])
+        self.assertIn("issues/projects/2/delete?issue_ids=483", third_call[0][1])
 
     # PR label management ----------------------------------------------
 
