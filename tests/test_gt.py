@@ -271,6 +271,61 @@ token_env = "ACME_TOKEN"
         self.assertEqual(settings["repo"], "cli/repo")
         self.assertEqual(settings["token"], "cli-token")
 
+    def test_resolve_connection_settings_reads_web_cookie_from_remote(self):
+        config = {
+            "default_remote": "cyberstorm",
+            "remotes": {
+                "cyberstorm": {
+                    "url": "https://gitea.example",
+                    "owner": "acme",
+                    "repo": "widgets",
+                    "token": "cfg-token",
+                    "web_cookie": "lang=en-US;_csrf=testcsrf;session=abc",
+                }
+            },
+        }
+        args = gt.parse_args([])
+        with patch.dict(os.environ, {}, clear=True):
+            settings = gt.resolve_connection_settings(args, config=config)
+        self.assertEqual(settings["web_cookie"], "lang=en-US;_csrf=testcsrf;session=abc")
 
+    def test_resolve_connection_settings_reads_web_cookie_env_from_remote(self):
+        config = {
+            "default_remote": "cyberstorm",
+            "remotes": {
+                "cyberstorm": {
+                    "url": "https://gitea.example",
+                    "owner": "acme",
+                    "repo": "widgets",
+                    "token": "cfg-token",
+                    "web_cookie_env": "ACME_WEB_COOKIE",
+                }
+            },
+        }
+        args = gt.parse_args([])
+        with patch.dict(os.environ, {"ACME_WEB_COOKIE": "lang=en-US;_csrf=fromenv;session=xyz"}, clear=True):
+            settings = gt.resolve_connection_settings(args, config=config)
+        self.assertEqual(settings["web_cookie"], "lang=en-US;_csrf=fromenv;session=xyz")
+
+
+
+    def test_parse_args_supports_project_add_command(self):
+        args = gt.parse_args(["project", "add", "2", "73"])
+        self.assertEqual(args.command, "project")
+        self.assertEqual(args.project_action, "add")
+        self.assertEqual(args.project_id, 2)
+        self.assertEqual(args.issue, 73)
+
+    @patch.object(gt.GiteaClient, "_web_request")
+    @patch.object(gt.GiteaClient, "_issue_internal_id", return_value=467)
+    def test_add_issue_to_project_posts_expected_web_payload(self, _mock_internal_id, mock_web_request):
+        self.client.add_issue_to_project(2, 73)
+
+        mock_web_request.assert_called_once_with(
+            "POST",
+            "issues/projects?issue_ids=467",
+            "id=2",
+            content_type="application/x-www-form-urlencoded; charset=UTF-8",
+        )
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Union
 from urllib import error, request
+from urllib.parse import urlencode
 
 from carapace.issue_ref import IssueRef, parse_dependency_refs, parse_issue_ref
 from carapace.hateoas import envelope, dump_yaml
@@ -72,14 +73,15 @@ class GiteaClient:
         self,
         method: str,
         path: str,
-        data: Optional[Dict[str, Any]] = None,
+        data: Optional[Union[Dict[str, Any], str]] = None,
         *,
         accept: str = "application/json",
+        content_type: str = "application/json",
     ) -> Any:
         url = f"{self.url}/{self.repo_full_name}/{path.lstrip('/')}"
         headers = {
             "Accept": accept,
-            "Content-Type": "application/json",
+            "Content-Type": content_type,
         }
 
         web_cookie = os.environ.get("GITEA_WEB_COOKIE")
@@ -95,7 +97,14 @@ class GiteaClient:
         headers["Cookie"] = web_cookie
         headers["X-CSRF-Token"] = web_csrf
 
-        req_data = json.dumps(data).encode("utf-8") if data else None
+        req_data: Optional[bytes] = None
+        if data is not None:
+            if isinstance(data, str):
+                req_data = data.encode("utf-8")
+            elif content_type.startswith("application/json"):
+                req_data = json.dumps(data).encode("utf-8")
+            else:
+                req_data = urlencode(data).encode("utf-8")
         req = request.Request(url, data=req_data, headers=headers, method=method)
         try:
             with request.urlopen(req) as resp:
@@ -191,6 +200,21 @@ class GiteaClient:
 
         projects.sort(key=lambda p: p["id"])
         return projects
+
+    def add_issue_to_project(self, project_id: int, issue_index: int) -> Dict[str, Any]:
+        issue_id = self._issue_internal_id(issue_index)
+        payload = f"id={project_id}"
+        self._web_request(
+            "POST",
+            f"issues/projects?issue_ids={issue_id}",
+            payload,
+            content_type="application/x-www-form-urlencoded; charset=UTF-8",
+        )
+        return {
+            "issue_number": issue_index,
+            "issue_id": issue_id,
+            "project_id": project_id,
+        }
 
     def move_issue_to_project_column(
         self, project_id: int, issue_index: int, target_column: str
@@ -394,6 +418,69 @@ def build_parser() -> argparse.ArgumentParser:
     label_parser.add_argument("action", choices=["add", "rm"])
     label_parser.add_argument("issue", type=int)
     label_parser.add_argument("label_id", type=int)
+
+    # Project board operations (web-routed in Gitea)
+    project_parser = subparsers.add_parser("project", help="Project board operations")
+    project_subparsers = project_parser.add_subparsers(dest="project_action")
+
+    project_subparsers.add_parser("list", help="List repository project boards")
+
+    project_cols = project_subparsers.add_parser("columns", help="List project columns")
+    project_cols.add_argument("project_id", type=int)
+
+    project_add = project_subparsers.add_parser(
+        "add", help="Add an issue card to a project board"
+    )
+    project_add.add_argument("project_id", type=int)
+    project_add.add_argument("issue", type=int, help="Issue number (index)")
+
+    project_move = project_subparsers.add_parser(
+        "move", help="Move issue card to a project column"
+    )
+    project_move.add_argument("project_id", type=int)
+    project_move.add_argument("issue", type=int, help="Issue number (index)")
+    project_move.add_argument(
+        "--to", required=True, help="Target column name (e.g. 'To Do', 'In Progress')"
+    )
+
+    # Pull request operations
+    pr_parser = subparsers.add_parser("pr", help="Pull request operations")
+    pr_subparsers = pr_parser.add_subparsers(dest="pr_action")
+
+    pr_list = pr_subparsers.add_parser("list", help="List pull requests")
+    pr_list.add_argument("--state", default="open", choices=["open", "closed", "all"])
+    pr_list.add_argument("--base", help="Filter by base branch")
+    pr_list.add_argument("--head", help="Filter by head branch")
+
+    pr_create = pr_subparsers.add_parser("create", help="Create a pull request")
+    pr_create.add_argument("--title", required=True, help="PR title")
+    pr_create.add_argument("--head", required=True, help="Head branch name")
+    pr_create.add_argument("--base", default="main", help="Base branch name")
+    pr_create.add_argument("--body", help="PR description body")
+
+    pr_reviews = pr_subparsers.add_parser("reviews", help="List pull request reviews")
+    pr_reviews.add_argument("pull", type=int, help="Pull request number")
+
+    pr_review = pr_subparsers.add_parser("review", help="Submit a pull request review")
+    pr_review.add_argument("pull", type=int, help="Pull request number")
+    pr_review.add_argument(
+        "--event",
+        required=True,
+        choices=["APPROVED", "REQUEST_CHANGES", "COMMENT"],
+        help="Review event type",
+    )
+    pr_review.add_argument("--body", help="Review comment body")
+
+    pr_merge = pr_subparsers.add_parser("merge", help="Merge a pull request")
+    pr_merge.add_argument("pull", type=int, help="Pull request number")
+    pr_merge.add_argument(
+        "--method",
+        default="merge",
+        choices=["merge", "rebase", "rebase-merge", "squash"],
+        help="Merge strategy",
+    )
+    pr_merge.add_argument("--title", help="Merge commit title")
+    pr_merge.add_argument("--message", help="Merge commit message")
     return parser
 
 
@@ -448,11 +535,15 @@ def resolve_connection_settings(args: argparse.Namespace, config: Optional[Dict[
     cfg_token = remote_cfg.get("token")
     token_env_name = remote_cfg.get("token_env")
     cfg_token_env = env.get(token_env_name) if isinstance(token_env_name, str) and token_env_name else None
+    cfg_web_cookie = remote_cfg.get("web_cookie")
+    web_cookie_env_name = remote_cfg.get("web_cookie_env")
+    cfg_web_cookie_env = env.get(web_cookie_env_name) if isinstance(web_cookie_env_name, str) and web_cookie_env_name else None
 
     settings: Dict[str, Optional[str]] = {
         "url": remote_cfg.get("url") if isinstance(remote_cfg.get("url"), str) else None,
         "repo": _repo_from_remote(remote_cfg),
         "token": cfg_token if isinstance(cfg_token, str) else cfg_token_env,
+        "web_cookie": cfg_web_cookie if isinstance(cfg_web_cookie, str) else cfg_web_cookie_env,
         "remote": remote_name,
     }
 
@@ -462,6 +553,8 @@ def resolve_connection_settings(args: argparse.Namespace, config: Optional[Dict[
         settings["repo"] = env.get("GITEA_REPO")
     if env.get("GITEA_TOKEN"):
         settings["token"] = env.get("GITEA_TOKEN")
+    if env.get("GITEA_WEB_COOKIE"):
+        settings["web_cookie"] = env.get("GITEA_WEB_COOKIE")
 
     if args.url:
         settings["url"] = args.url
@@ -477,63 +570,6 @@ def resolve_connection_settings(args: argparse.Namespace, config: Optional[Dict[
 
 def main():
     parser = build_parser()
-
-    # Project board operations (web-routed in Gitea)
-    project_parser = subparsers.add_parser("project", help="Project board operations")
-    project_subparsers = project_parser.add_subparsers(dest="project_action")
-
-    project_subparsers.add_parser("list", help="List repository project boards")
-
-    project_cols = project_subparsers.add_parser("columns", help="List project columns")
-    project_cols.add_argument("project_id", type=int)
-
-    project_move = project_subparsers.add_parser(
-        "move", help="Move issue card to a project column"
-    )
-    project_move.add_argument("project_id", type=int)
-    project_move.add_argument("issue", type=int, help="Issue number (index)")
-    project_move.add_argument(
-        "--to", required=True, help="Target column name (e.g. 'To Do', 'In Progress')"
-    )
-
-    # Pull request operations
-    pr_parser = subparsers.add_parser("pr", help="Pull request operations")
-    pr_subparsers = pr_parser.add_subparsers(dest="pr_action")
-
-    pr_list = pr_subparsers.add_parser("list", help="List pull requests")
-    pr_list.add_argument("--state", default="open", choices=["open", "closed", "all"])
-    pr_list.add_argument("--base", help="Filter by base branch")
-    pr_list.add_argument("--head", help="Filter by head branch")
-
-    pr_create = pr_subparsers.add_parser("create", help="Create a pull request")
-    pr_create.add_argument("--title", required=True, help="PR title")
-    pr_create.add_argument("--head", required=True, help="Head branch name")
-    pr_create.add_argument("--base", default="main", help="Base branch name")
-    pr_create.add_argument("--body", help="PR description body")
-
-    pr_reviews = pr_subparsers.add_parser("reviews", help="List pull request reviews")
-    pr_reviews.add_argument("pull", type=int, help="Pull request number")
-
-    pr_review = pr_subparsers.add_parser("review", help="Submit a pull request review")
-    pr_review.add_argument("pull", type=int, help="Pull request number")
-    pr_review.add_argument(
-        "--event",
-        required=True,
-        choices=["APPROVED", "REQUEST_CHANGES", "COMMENT"],
-        help="Review event type",
-    )
-    pr_review.add_argument("--body", help="Review comment body")
-
-    pr_merge = pr_subparsers.add_parser("merge", help="Merge a pull request")
-    pr_merge.add_argument("pull", type=int, help="Pull request number")
-    pr_merge.add_argument(
-        "--method",
-        default="merge",
-        choices=["merge", "rebase", "rebase-merge", "squash"],
-        help="Merge strategy",
-    )
-    pr_merge.add_argument("--title", help="Merge commit title")
-    pr_merge.add_argument("--message", help="Merge commit message")
 
     if len(sys.argv) == 1:
         # Self-documenting command tree
@@ -558,6 +594,7 @@ def main():
                     {"name": "label rm", "description": "Remove label from issue", "usage": "gt label rm <issue_index> <label_id>"},
                     {"name": "project list", "description": "List repository project boards", "usage": "gt project list"},
                     {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
+                    {"name": "project add", "description": "Add an issue card to a board", "usage": "gt project add <project_id> <issue_number>"},
                     {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
                     {"name": "pr list", "description": "List pull requests", "usage": "gt pr list [--state open|closed|all]"},
                     {"name": "pr create", "description": "Create a pull request", "usage": "gt pr create --title \"...\" --head branch --base main [--body \"...\"]"},
@@ -607,6 +644,8 @@ def main():
         sys.exit(1)
 
     client = GiteaClient(settings["url"], settings["token"], settings["repo"])
+    if settings.get("web_cookie"):
+        os.environ["GITEA_WEB_COOKIE"] = settings["web_cookie"]
     full_cmd = " ".join(sys.argv)
 
     try:
@@ -699,6 +738,17 @@ def main():
                     result={"project_id": args.project_id, "columns": columns},
                     next_actions=[
                         {"command": f"gt project move {args.project_id} 1 --to \"In Progress\"", "description": "Move issue #1 to In Progress"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.project_action == "add":
+                added = client.add_issue_to_project(args.project_id, args.issue)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"message": "Issue added to project board", **added},
+                    next_actions=[
+                        {"command": f"gt project move {args.project_id} {args.issue} --to \"Backlog\"", "description": "Move issue to a board column"},
                     ],
                 )
                 print(dump_yaml(payload))
