@@ -1,28 +1,37 @@
 when:
-  - event: [push, tag]
-    branch: [main]
-
+- event: push
+  branch: main
+  repo: cyberstorm-dev/carapace
+- event: manual
+  repo: cyberstorm-dev/carapace
+- event: pull_request
+  branch: main
+  repo: cyberstorm-dev/carapace
 steps:
-  - name: test
-    image: python:3.12-slim
-    commands:
-      - python -m pip install --upgrade pip
-      - python -m pip install -e ".[dev]"
-      - python -m pytest tests -q
-
-  - name: build-and-push
-    image: woodpeckerci/plugin-docker-buildx
-    settings:
-      registry: ghcr.io
-      repo: ghcr.io/cyberstorm-dev/carapace
-      context: .
-      dockerfile: Dockerfile
-      tags:
-        - latest
-        - "${CI_COMMIT_SHA:0:7}"
-      platforms:
-        - linux/amd64
-      username:
-        from_secret: ghcr_username
-      password:
-        from_secret: ghcr_token
+- name: test
+  image: python:3.12-slim
+  commands:
+  - python -m pip install --upgrade pip
+  - python -m pip install -e ".[dev]"
+  - python -m pytest tests -q
+- name: build-and-push
+  image: woodpeckerci/plugin-docker-buildx
+  when:
+  - event:
+    - push
+    - manual
+    branch: main
+  settings:
+    registry: ghcr.io
+    repo: ghcr.io/cyberstorm-dev/carapace
+    context: .
+    dockerfile: Dockerfile
+    tags:
+    - latest
+    - ${CI_COMMIT_SHA:0:7}
+    platforms:
+    - linux/amd64
+    username:
+      from_secret: ghcr_username
+    password:
+      from_secret: ghcr_token

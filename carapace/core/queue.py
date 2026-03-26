@@ -111,6 +111,7 @@ def _build_ready_queue_items(
     graph: Any,
     repo: str,
     default_forge: str,
+    reasons: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     ready_refs = [IssueRef(repo, int(issue["number"])) for issue in ready]
     priority_scores = calculate_priority(graph, ready_refs)
@@ -132,7 +133,7 @@ def _build_ready_queue_items(
                 graph=graph,
                 priority_score=priority_scores.get(ref, 0),
                 default_forge=default_forge,
-                reasons=["active_subgraph", "needs-pr", "dependencies_clear"],
+                reasons=reasons or ["active_subgraph", "needs-pr", "dependencies_clear"],
             )
         )
     return queue_items
@@ -145,6 +146,7 @@ def run(args: argparse.Namespace) -> int:
         repo = args.repo or os.environ.get("GITEA_REPO", "openclaw/nisto-home")
         redis_url = args.redis_url or os.environ.get("REDIS_URL")
         poll_interval = getattr(args, "poll_interval", None) or int(os.environ.get("POLL_INTERVAL", "60"))
+        policy = getattr(args, "policy", "strict")
         default_forge = _default_forge_for_url(url)
 
         if not token:
@@ -153,18 +155,10 @@ def run(args: argparse.Namespace) -> int:
 
         if getattr(args, "daemon", False):
             if not redis_url:
-                print(
-                    dump_yaml(
-                        envelope(
-                            command="carapace queue",
-                            ok=False,
-                            error={"message": "Missing REDIS_URL for daemon mode"},
-                        )
-                    )
-                )
+                print(dump_yaml(envelope(command="carapace queue --daemon", ok=False, error={"message": "Redis URL is required for daemon mode"})))
                 return 1
             try:
-                run_daemon(url, token, repo, redis_url, poll_interval)
+                run_daemon(url, token, repo, redis_url, poll_interval, policy)
             except KeyboardInterrupt:
                 logging.info("Exiting queue daemon...")
                 return 0
@@ -174,6 +168,49 @@ def run(args: argparse.Namespace) -> int:
             return 0
 
         client = GiteaClient(url, token, repo)
+
+        if getattr(args, "release", False):
+            if not args.assignee:
+                print(dump_yaml(envelope(command="carapace queue --release", ok=False, error={"message": "Assignee required for release"})))
+                return 1
+            
+            # Find issues assigned to this agent marked in-progress
+            issues = client.list_issues(state="open")
+            to_release = []
+            for issue in issues:
+                if args.assignee in _assignees(issue) and "in-progress" in [l.lower() for l in _labels(issue)]:
+                    to_release.append(issue)
+            
+            if not to_release:
+                print(dump_yaml(envelope(command="carapace queue --release", ok=True, result={"message": "No issues to release for this assignee"})))
+                return 0
+            
+            # Label lookup for IDs
+            repo_labels = client.get_labels()
+            in_progress_id = next((l["id"] for l in repo_labels if l["name"].lower() == "in-progress"), None)
+            blocked_id = next((l["id"] for l in repo_labels if l["name"].lower() == "blocked"), None)
+            
+            results = []
+            for issue in to_release:
+                num = issue["number"]
+                # Unassign
+                client.patch_issue(num, {"assignees": []})
+                # Remove in-progress
+                if in_progress_id:
+                    client.remove_label(num, in_progress_id)
+                # Add blocked
+                if blocked_id:
+                    client.add_label(num, blocked_id)
+                
+                # Optional comment
+                if getattr(args, "reason", None):
+                    client._request("POST", f"issues/{num}/comments", {"body": f"**Status: Blocked**\nReason: {args.reason}"})
+                
+                results.append({"number": num, "title": issue["title"], "status": "released"})
+            
+            print(dump_yaml(envelope(command="carapace queue --release", ok=True, result={"released": results})))
+            return 0
+
         dummy_pool = WorkerPool(HostWorker(), APIKeyPool([]), max_parallel=1)
         scheduler = Scheduler(client, dummy_pool)
 
@@ -255,7 +292,8 @@ def run(args: argparse.Namespace) -> int:
                 if not isinstance(node, IssueRef) or node.repo != repo:
                     continue
                 issue_data = client._request("GET", f"issues/{node.number}")
-                if args.assignee in _assignees(issue_data):
+                issue_labels = [l.lower() for l in _labels(issue_data)]
+                if args.assignee in _assignees(issue_data) and "blocked" not in issue_labels:
                     my_in_progress.append(issue_data)
 
         if getattr(args, "claim", False) and my_in_progress:
@@ -287,9 +325,13 @@ def run(args: argparse.Namespace) -> int:
             print(dump_yaml(payload))
             return 0
 
-        ready = scheduler.compute_ready_queue(graph=graph)
+        ready = scheduler.compute_ready_queue(policy=policy, graph=graph)
         if args.assignee:
-            ready = [issue for issue in ready if args.assignee in _assignees(issue)]
+            # Include issues assigned to the agent OR the orchestrator (scheduler)
+            ready = [
+                issue for issue in ready 
+                if args.assignee in _assignees(issue) or "scheduler" in _assignees(issue) or not _assignees(issue)
+            ]
 
         command_str = "carapace queue"
         if args.milestone:
@@ -309,12 +351,23 @@ def run(args: argparse.Namespace) -> int:
             graph=graph,
             repo=repo,
             default_forge=default_forge,
+            reasons=["active_subgraph" if policy == "strict" else "open_issue", "needs-pr", "dependencies_clear"],
         )
 
         if getattr(args, "claim", False):
             top_item = queue_items[0]
             identity = top_item.get("identity", {})
             issue_number = int(identity["number"])
+            
+            # Auto-Assignment: If assigned to scheduler or nobody, re-assign to caller
+            current_assignees = top_item.get("assignees", [])
+            if args.assignee and (not current_assignees or "scheduler" in current_assignees):
+                try:
+                    client.patch_issue(issue_number, {"assignees": [args.assignee]})
+                    top_item["assignees"] = [args.assignee]
+                except Exception as e:
+                    logging.warning("Failed to auto-assign issue #%d to %s: %s", issue_number, args.assignee, e)
+
             try:
                 client.add_label(issue_number, 7)
                 client.remove_label(issue_number, 5)
@@ -338,7 +391,7 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
 
-def run_daemon(gitea_url: str, token: str, repo: str, redis_url: str, poll_interval: int) -> None:
+def run_daemon(gitea_url: str, token: str, repo: str, redis_url: str, poll_interval: int, policy: str = "strict") -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     client = GiteaClient(gitea_url, token, repo)
@@ -355,11 +408,12 @@ def run_daemon(gitea_url: str, token: str, repo: str, redis_url: str, poll_inter
     logging.info("Redis URL: %s", redis_url)
     logging.info("Gitea URL: %s", gitea_url)
     logging.info("Poll interval: %ss", poll_interval)
+    logging.info("Policy: %s", policy)
 
     while True:
         try:
             graph = scheduler.fetch_dag()
-            ready_issues = scheduler.compute_ready_queue(graph=graph)
+            ready_issues = scheduler.compute_ready_queue(policy=policy, graph=graph)
 
             if not ready_issues:
                 logging.info("Ready queue is empty.")
@@ -370,6 +424,7 @@ def run_daemon(gitea_url: str, token: str, repo: str, redis_url: str, poll_inter
                     graph=graph,
                     repo=repo,
                     default_forge=default_forge,
+                    reasons=["active_subgraph" if policy == "strict" else "open_issue", "needs-pr", "dependencies_clear"],
                 )
                 zadd_args: Dict[str, float] = {}
                 count = len(queue_items)

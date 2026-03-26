@@ -1,7 +1,6 @@
 import os
 import sys
-from collections import deque
-from typing import Any, Dict, List
+from typing import List, Dict, Any, Optional
 
 from carapace.cli.gt import GiteaClient, GiteaAPIError
 from carapace.issue_ref import IssueRef
@@ -19,80 +18,44 @@ class Scheduler:
 
     def fetch_dag(self) -> Any:
         """Fetches all open issues and builds the global DiGraph."""
-        primary_repo = self.client.repo_full_name
-        issues = self.client.list_issues(state="open", repo=primary_repo)
-        graph_issues: List[Dict[str, Any]] = list(issues)
-        for issue in graph_issues:
-            issue["repo"] = primary_repo
-
-        for issue in graph_issues:
-            issue["dependencies"] = self.client.list_dependencies(issue["number"], repo=primary_repo)
-
-        indexed_issues: Dict[IssueRef, Dict[str, Any]] = {
-            IssueRef(primary_repo, int(issue["number"])): issue for issue in graph_issues
-        }
-
-        seen = set(indexed_issues.keys())
-        queue = deque(
-            dependency
-            for issue in graph_issues
-            for dependency in issue.get("dependencies", [])
-            if isinstance(dependency, IssueRef) and dependency not in seen
-        )
-
-        while queue:
-            ref = queue.popleft()
-            if ref in seen:
-                continue
-            seen.add(ref)
-            try:
-                dependency_issue = self.client.get_issue(ref.number, repo=ref.repo)
-            except GiteaAPIError:
-                continue
-
-            if dependency_issue.get("state") != "open":
-                continue
-
-            dependency_issue["repo"] = ref.repo
-            dependency_issue["dependencies"] = self.client.list_dependencies(
-                ref.number, repo=ref.repo
-            )
-            indexed_issues[ref] = dependency_issue
-            for dep in dependency_issue.get("dependencies", []):
-                if dep not in seen:
-                    queue.append(dep)
-
-        issues = list(indexed_issues.values())
+        issues = self.client.list_issues(state="open")
         for issue in issues:
-            issue["dependencies"] = [
-                d for d in issue.get("dependencies", []) if isinstance(d, IssueRef)
-            ]
-        return build_graph(issues, default_repo=primary_repo)
+            try:
+                issue["dependencies"] = self.client.list_dependencies(issue['number'])
+            except GiteaAPIError:
+                issue["dependencies"] = []
+        return build_graph(issues, default_repo=self.client.repo_full_name)
 
-    def compute_ready_queue(self, graph: Any = None) -> List[Dict[str, Any]]:
+    def compute_ready_queue(self, policy: str = "strict", graph: Optional[Any] = None) -> List[Dict[str, Any]]:
         """
-        Finds issues that are open, have 'needs-pr', and are part of the active topological subgraph.
+        Finds issues that are open, have 'needs-pr', and are part of the active topological subgraph (if strict).
         """
         if graph is None:
             graph = self.fetch_dag()
-        primary_repo = self.client.repo_full_name
-        active_nodes = get_active_subgraph(graph)
         
-        if not active_nodes:
-            # Fallback for now: if no active subgraph, return nothing
+        if policy == "permissive":
+            relevant_nodes = set(graph.nodes())
+        else:
+            relevant_nodes = get_active_subgraph(graph)
+        
+        if not relevant_nodes:
+            # Fallback for now: if no relevant nodes, return nothing
             return []
 
-        ready_issues: List[Dict[str, Any]] = []
-        for node in active_nodes:
-            if node.repo != primary_repo:
-                continue
+        ready_issues = []
+        for node in relevant_nodes:
             data = graph.nodes[node]
-            if "needs-pr" not in [l.lower() for l in data.get("labels", [])]:
+            labels = [l.lower() for l in data.get("labels", [])]
+            if "needs-pr" not in labels:
+                continue
+            
+            if "blocked" in labels:
                 continue
                 
             # Check dependencies
             is_ready = True
             for dep in graph.predecessors(node):
+                if dep not in graph: continue
                 dep_data = graph.nodes[dep]
                 # If dependency is in graph and NOT synthetic, it's an open issue.
                 if not dep_data.get("synthetic", False):
@@ -105,18 +68,12 @@ class Scheduler:
             
             if is_ready:
                 # Re-fetch full issue data for the result
-                issue_data = self.client._request("GET", f"issues/{node.number}", repo=node.repo)
-                ready_issues.append(issue_data)
+                ready_issues.append(self.client._request("GET", f"issues/{node.number}"))
                 
-        # Sort by priority (descendants in the active subgraph)
-        priority_scores = calculate_priority(
-            graph, [IssueRef(primary_repo, int(issue["number"])) for issue in ready_issues]
-        )
-        ready_issues = sorted(
-            ready_issues,
-            key=lambda x: (priority_scores.get(IssueRef(primary_repo, int(x["number"])), 0), -x["number"]),
-            reverse=True,
-        )
+        # Sort by priority (descendants in the graph)
+        ready_refs = [IssueRef(self.client.repo_full_name, i["number"]) for i in ready_issues]
+        priority_scores = calculate_priority(graph, ready_refs)
+        ready_issues = sorted(ready_issues, key=lambda x: (priority_scores.get(IssueRef(self.client.repo_full_name, x["number"]), 0), -x["number"]), reverse=True)
         
         return ready_issues
 
@@ -160,11 +117,11 @@ class Scheduler:
                 print(f"Warning: Failed to fetch data for PR #{pr_num}: {e.message}")
                 continue
 
-    def run_cycle(self):
+    def run_cycle(self, policy: str = "strict"):
         print(f"--- Starting Scheduler Cycle for Milestone {self.milestone} ---")
         self.auto_merge_approved_prs()
         
-        ready_queue = self.compute_ready_queue()
+        ready_queue = self.compute_ready_queue(policy=policy)
         if not ready_queue:
             print("Ready queue is empty. Nothing to dispatch.")
             return

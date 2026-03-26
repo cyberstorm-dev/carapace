@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+
 from carapace.cli import gt
 from carapace.cli.gt import GiteaClient
 
@@ -16,7 +17,6 @@ class TestGT(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_add_dependency_prevents_duplicate(self, mock_urlopen):
         """Should check for existing dependencies and not POST if present."""
-        # Mock GET returns an existing dependency #20
         mock_get = MagicMock()
         mock_get.status = 200
         mock_get.read.return_value = json.dumps([{"number": 20}]).encode("utf-8")
@@ -30,13 +30,11 @@ class TestGT(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_remove_dependency_sends_body(self, mock_urlopen):
         """GREEN: Should send IssueMeta in body of DELETE request."""
-        # Mock GET returns a dependency issue #20
         mock_get = MagicMock()
         mock_get.status = 200
         mock_get.read.return_value = json.dumps([{"number": 20}]).encode("utf-8")
         mock_get.__enter__.return_value = mock_get
 
-        # Mock DELETE response
         mock_del = MagicMock()
         mock_del.status = 204
         mock_del.__enter__.return_value = mock_del
@@ -45,13 +43,13 @@ class TestGT(unittest.TestCase):
 
         self.client.remove_dependency(10, 20)
 
-        # Verify the DELETE call
         last_call_req = mock_urlopen.call_args_list[-1][0][0]
-        # URL should NOT have /20 at the end
-        self.assertEqual(last_call_req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/issues/10/dependencies")
+        self.assertEqual(
+            last_call_req.get_full_url(),
+            "http://localhost/api/v1/repos/owner/repo/issues/10/dependencies",
+        )
         self.assertEqual(last_call_req.get_method(), "DELETE")
-        
-        # Body should contain the IssueMeta
+
         payload = json.loads(last_call_req.data.decode("utf-8"))
         self.assertEqual(payload, {"index": 20, "owner": "owner", "repo": "repo"})
 
@@ -104,6 +102,79 @@ class TestGT(unittest.TestCase):
 
         request = mock_urlopen.call_args_list[0][0][0]
         self.assertIn("assignee=builder", request.full_url)
+
+    @patch("urllib.request.urlopen")
+    def test_list_pulls_uses_expected_query(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps([{"number": 10, "state": "open"}]).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        pulls = self.client.list_pulls(state="open")
+
+        self.assertEqual(len(pulls), 1)
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertIn("/api/v1/repos/owner/repo/pulls?state=open&limit=100", req.full_url)
+
+    @patch("urllib.request.urlopen")
+    def test_create_pull_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"number": 22, "html_url": "http://example/pr/22"}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.create_pull(
+            title="feat: x",
+            head="issue-2-fix",
+            base="main",
+            body="summary",
+        )
+
+        self.assertEqual(result["number"], 22)
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/pulls")
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(
+            payload,
+            {"title": "feat: x", "head": "issue-2-fix", "base": "main", "body": "summary"},
+        )
+
+    @patch("urllib.request.urlopen")
+    def test_submit_pull_review_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"id": 99, "state": "APPROVED"}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.submit_pull_review(7, "APPROVED", "looks good")
+
+        self.assertEqual(result["state"], "APPROVED")
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/pulls/7/reviews")
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"event": "APPROVED", "body": "looks good"})
+
+    @patch("urllib.request.urlopen")
+    def test_merge_pull_posts_expected_payload(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({"sha": "abc123", "merged": True}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        result = self.client.merge_pull(7, merge_method="squash", commit_title="merge title")
+
+        self.assertTrue(result["merged"])
+        req = mock_urlopen.call_args_list[0][0][0]
+        self.assertEqual(req.get_full_url(), "http://localhost/api/v1/repos/owner/repo/pulls/7/merge")
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"Do": "squash", "MergeTitleField": "merge title"})
 
     def test_load_gt_config_reads_named_remotes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -180,9 +251,14 @@ token_env = "ACME_TOKEN"
                 }
             },
         }
-        args = gt.parse_args(
-            ["--url", "https://cli.example", "--repo", "cli/repo", "--token", "cli-token"]
-        )
+        args = gt.parse_args([
+            "--url",
+            "https://cli.example",
+            "--repo",
+            "cli/repo",
+            "--token",
+            "cli-token",
+        ])
         env = {
             "GITEA_URL": "https://env.example",
             "GITEA_REPO": "env/repo",
@@ -194,6 +270,7 @@ token_env = "ACME_TOKEN"
         self.assertEqual(settings["url"], "https://cli.example")
         self.assertEqual(settings["repo"], "cli/repo")
         self.assertEqual(settings["token"], "cli-token")
+
 
 if __name__ == "__main__":
     unittest.main()

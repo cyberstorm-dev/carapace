@@ -19,8 +19,6 @@ DEFAULT_CHECK_TIERS: Dict[str, str] = {
     "missing_needs_pr_issue": TIER_HARD,
     "missing_milestone": TIER_HARD,
     "missing_assignee": TIER_ADVISORY,
-    "missing_parent_dependency": TIER_HARD,
-    "leaf_without_needs_pr": TIER_HARD,
     "tan_reachability": TIER_ADVISORY,
     "molt_reachability": TIER_HARD,
     "molt_as_dependency": TIER_HARD,
@@ -72,6 +70,7 @@ def build_graph(issues: Iterable[Dict[str, Any]], default_repo: str = "local") -
             labels=_labels_for(issue),
             assignee=issue.get("assignee"),
             milestone=_milestone_id(issue),
+            state=issue.get("state", "open"),
             synthetic=issue.get("synthetic", False),
         )
 
@@ -82,7 +81,7 @@ def build_graph(issues: Iterable[Dict[str, Any]], default_repo: str = "local") -
             continue
         for dep in _dependencies_for(issue, default_repo=issue_repo):
             if dep not in graph:
-                graph.add_node(dep, labels=set(), assignee=None, milestone=None, synthetic=True)
+                graph.add_node(dep, labels=set(), assignee=None, milestone=None, state='open', synthetic=True)
             graph.add_edge(dep, issue_ref)
 
     return graph
@@ -146,11 +145,12 @@ def validate_issues(
                 labels=_labels_for(issue),
                 assignee=issue.get("assignee"),
                 milestone=_milestone_id(issue),
+                state=issue.get("state", "open"),
                 synthetic=True,
             )
             for dep in _dependencies_for(issue, default_repo=issue_repo):
                 if dep not in graph:
-                    graph.add_node(dep, labels=set(), assignee=None, milestone=None, synthetic=True)
+                    graph.add_node(dep, labels=set(), assignee=None, milestone=None, state='open', synthetic=True)
                 graph.add_edge(dep, n)
             tan_nodes.append(n)
 
@@ -175,6 +175,8 @@ def validate_issues(
     for node, data in graph.nodes(data=True):
         if data.get("synthetic") or node in config.exempt_issues:
             continue
+        
+        is_closed = data.get("state") == "closed"
 
         labels = data.get("labels", set())
         has_needs_pr = needs_label in labels
@@ -182,7 +184,7 @@ def validate_issues(
         is_tan = tan_label in labels
         is_helpdesk = "helpdesk" in labels
 
-        if data.get("assignee") is None:
+        if not is_closed and data.get("assignee") is None:
             _add_message(
                 messages,
                 "missing_assignee",
@@ -196,21 +198,9 @@ def validate_issues(
         if _milestone_id({"milestone": data.get("milestone")}) is None:
             _add_message(messages, "missing_milestone", f"Issue {_node_label(node, default_repo)} is missing a milestone assignment", config)
 
-        if not is_molt and not is_tan and not has_needs_pr and graph.in_degree(node) == 0:
-            _add_message(
-                messages,
-                "missing_parent_dependency",
-                f"Issue {_node_label(node, default_repo)} has no dependency/parent",
-                config,
-            )
 
-        if not is_molt and not is_tan and not has_needs_pr and graph.out_degree(node) == 0:
-            _add_message(
-                messages,
-                "leaf_without_needs_pr",
-                f"Issue {_node_label(node, default_repo)} is not depended on and is missing `{needs_label}` label",
-                config,
-            )
+
+
 
         if tan_nodes and not _reachable_from_any(graph, tan_nodes, node):
             _add_message(

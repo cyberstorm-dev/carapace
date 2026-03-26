@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional, Union
 from urllib import error, request
@@ -66,6 +67,166 @@ class GiteaClient:
             )
         except Exception as e:
             raise
+
+    def _web_request(
+        self,
+        method: str,
+        path: str,
+        data: Optional[Dict[str, Any]] = None,
+        *,
+        accept: str = "application/json",
+    ) -> Any:
+        url = f"{self.url}/{self.repo_full_name}/{path.lstrip('/')}"
+        headers = {
+            "Accept": accept,
+            "Content-Type": "application/json",
+        }
+
+        web_cookie = os.environ.get("GITEA_WEB_COOKIE")
+        web_csrf = os.environ.get("GITEA_WEB_CSRF_TOKEN")
+        if not web_csrf:
+            web_csrf = self._csrf_from_cookie(web_cookie)
+
+        if not web_cookie:
+            raise RuntimeError("GITEA_WEB_COOKIE required for project board web operations")
+        if not web_csrf:
+            raise RuntimeError("CSRF token missing: include _csrf in GITEA_WEB_COOKIE")
+
+        headers["Cookie"] = web_cookie
+        headers["X-CSRF-Token"] = web_csrf
+
+        req_data = json.dumps(data).encode("utf-8") if data else None
+        req = request.Request(url, data=req_data, headers=headers, method=method)
+        try:
+            with request.urlopen(req) as resp:
+                raw = resp.read().decode("utf-8")
+                if not raw:
+                    return None
+                if "application/json" in (resp.headers.get("Content-Type") or ""):
+                    return json.loads(raw)
+                return raw
+        except error.HTTPError as e:
+            body = e.read().decode("utf-8")
+            hint = ""
+            if e.code == 404 and path.startswith("projects/"):
+                hint = " (possible wrong project id or no board access)"
+            raise GiteaAPIError(
+                message=f"Web request failed for {path}{hint}: {body[:300]}",
+                code=e.code,
+                reason=e.reason,
+            )
+
+    @staticmethod
+    def _csrf_from_cookie(cookie: Optional[str]) -> Optional[str]:
+        if not cookie:
+            return None
+        for part in cookie.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            if key.strip() == "_csrf":
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _column_key(name: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", name.lower())
+
+    def _issue_internal_id(self, issue_index: int) -> int:
+        issue = self.get_issue(issue_index, repo=self.repo_full_name)
+        issue_id = issue.get("id")
+        if not isinstance(issue_id, int):
+            raise RuntimeError(f"Issue #{issue_index} has invalid internal id: {issue_id!r}")
+        return issue_id
+
+    def list_project_columns(self, project_id: int) -> List[Dict[str, Any]]:
+        html = self._web_request("GET", f"projects/{project_id}", accept="text/html")
+        if not isinstance(html, str):
+            raise RuntimeError("Unexpected non-HTML response while reading project board")
+
+        columns: Dict[int, Dict[str, Any]] = {}
+        for col_id in re.findall(r'class="[^"]*project-column[^"]*"[^>]*data-id="(\d+)"', html):
+            cid = int(col_id)
+            columns[cid] = {"id": cid, "title": None, "key": None}
+
+        # Gitea 1.25+ renders extra classes and SVG wrappers in column headers.
+        # The modal metadata remains stable and includes id/title pairs.
+        for col_id, title in re.findall(
+            r'data-modal-project-column-id="(\d+)".*?data-modal-project-column-title-input="([^"]*)"',
+            html,
+            flags=re.S,
+        ):
+            cid = int(col_id)
+            if cid not in columns:
+                columns[cid] = {"id": cid, "title": None, "key": None}
+            title_clean = title.strip()
+            if title_clean:
+                columns[cid]["title"] = title_clean
+                columns[cid]["key"] = self._column_key(title_clean)
+
+        resolved = [c for c in columns.values() if c["title"]]
+        resolved.sort(key=lambda c: c["id"])
+        return resolved
+
+    def list_projects(self) -> List[Dict[str, Any]]:
+        html = self._web_request("GET", "issues", accept="text/html")
+        if not isinstance(html, str):
+            raise RuntimeError("Unexpected non-HTML response while reading repository issue page")
+
+        pattern = (
+            rf'<div class="item issue-action" data-element-id="(\d+)" '
+            rf'data-url="/{re.escape(self.repo_full_name)}/issues/projects">(.*?)</div>'
+        )
+
+        projects: List[Dict[str, Any]] = []
+        for pid_raw, raw_body in re.findall(pattern, html, flags=re.S):
+            pid = int(pid_raw)
+            if pid == 0:
+                continue
+            name = re.sub(r"<[^>]+>", "", raw_body).strip()
+            if not name:
+                continue
+            projects.append({"id": pid, "name": name})
+
+        projects.sort(key=lambda p: p["id"])
+        return projects
+
+    def move_issue_to_project_column(
+        self, project_id: int, issue_index: int, target_column: str
+    ) -> Dict[str, Any]:
+        columns = self.list_project_columns(project_id)
+        if not columns:
+            raise RuntimeError(
+                f"No columns found for project #{project_id}. "
+                "Run `gt project list` to confirm project id and board visibility."
+            )
+
+        target_key = self._column_key(target_column)
+        target = next(
+            (
+                c
+                for c in columns
+                if c["key"] == target_key or c["title"].lower() == target_column.lower()
+            ),
+            None,
+        )
+        if not target:
+            known = ", ".join(c["title"] for c in columns)
+            raise RuntimeError(
+                f"Column '{target_column}' not found in project #{project_id}. Known: {known}"
+            )
+
+        issue_id = self._issue_internal_id(issue_index)
+        payload = {"issues": [{"issueID": issue_id, "sorting": 0}]}
+        self._web_request("POST", f"projects/{project_id}/{target['id']}/move", payload)
+        return {
+            "issue_number": issue_index,
+            "issue_id": issue_id,
+            "project_id": project_id,
+            "column_id": target["id"],
+            "column_title": target["title"],
+        }
 
     def list_issues(
         self,
@@ -153,6 +314,57 @@ class GiteaClient:
         # Gitea DELETE to /labels/{id} removes that specific label
         return self._request("DELETE", f"issues/{issue_index}/labels/{label_id}")
 
+    def patch_issue(self, issue_index: int, data: Dict[str, Any]):
+        """Updates issue metadata via PATCH."""
+        return self._request("PATCH", f"issues/{issue_index}", data)
+
+    def get_labels(self) -> List[Dict[str, Any]]:
+        """Fetches all repository labels."""
+        return self._request("GET", "labels") or []
+
+    def list_pulls(self, state: str = "open", base: Optional[str] = None, head: Optional[str] = None) -> List[Dict[str, Any]]:
+        params = [f"state={state}", "limit=100"]
+        if base:
+            params.append(f"base={base}")
+        if head:
+            params.append(f"head={head}")
+        return self._request("GET", f"pulls?{'&'.join(params)}") or []
+
+    def create_pull(self, title: str, head: str, base: str = "main", body: Optional[str] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"title": title, "head": head, "base": base}
+        if body:
+            payload["body"] = body
+        return self._request("POST", "pulls", payload)
+
+    def list_pull_reviews(self, pull_index: int) -> List[Dict[str, Any]]:
+        return self._request("GET", f"pulls/{pull_index}/reviews") or []
+
+    def submit_pull_review(self, pull_index: int, event: str, body: Optional[str] = None) -> Dict[str, Any]:
+        normalized_event = event.upper()
+        if normalized_event not in {"APPROVED", "REQUEST_CHANGES", "COMMENT"}:
+            raise ValueError("event must be one of: APPROVED, REQUEST_CHANGES, COMMENT")
+        payload: Dict[str, Any] = {"event": normalized_event}
+        if body:
+            payload["body"] = body
+        return self._request("POST", f"pulls/{pull_index}/reviews", payload)
+
+    def merge_pull(
+        self,
+        pull_index: int,
+        merge_method: str = "merge",
+        commit_title: Optional[str] = None,
+        commit_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        method = merge_method.lower()
+        if method not in {"merge", "rebase", "rebase-merge", "squash"}:
+            raise ValueError("merge_method must be one of: merge, rebase, rebase-merge, squash")
+        payload: Dict[str, Any] = {"Do": method}
+        if commit_title:
+            payload["MergeTitleField"] = commit_title
+        if commit_message:
+            payload["MergeMessageField"] = commit_message
+        return self._request("POST", f"pulls/{pull_index}/merge", payload)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)
@@ -179,7 +391,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Issue labels
     label_parser = subparsers.add_parser("label", help="Manage issue labels")
-    label_parser.add_argument("action", choices=["add"])
+    label_parser.add_argument("action", choices=["add", "rm"])
     label_parser.add_argument("issue", type=int)
     label_parser.add_argument("label_id", type=int)
     return parser
@@ -266,6 +478,63 @@ def resolve_connection_settings(args: argparse.Namespace, config: Optional[Dict[
 def main():
     parser = build_parser()
 
+    # Project board operations (web-routed in Gitea)
+    project_parser = subparsers.add_parser("project", help="Project board operations")
+    project_subparsers = project_parser.add_subparsers(dest="project_action")
+
+    project_subparsers.add_parser("list", help="List repository project boards")
+
+    project_cols = project_subparsers.add_parser("columns", help="List project columns")
+    project_cols.add_argument("project_id", type=int)
+
+    project_move = project_subparsers.add_parser(
+        "move", help="Move issue card to a project column"
+    )
+    project_move.add_argument("project_id", type=int)
+    project_move.add_argument("issue", type=int, help="Issue number (index)")
+    project_move.add_argument(
+        "--to", required=True, help="Target column name (e.g. 'To Do', 'In Progress')"
+    )
+
+    # Pull request operations
+    pr_parser = subparsers.add_parser("pr", help="Pull request operations")
+    pr_subparsers = pr_parser.add_subparsers(dest="pr_action")
+
+    pr_list = pr_subparsers.add_parser("list", help="List pull requests")
+    pr_list.add_argument("--state", default="open", choices=["open", "closed", "all"])
+    pr_list.add_argument("--base", help="Filter by base branch")
+    pr_list.add_argument("--head", help="Filter by head branch")
+
+    pr_create = pr_subparsers.add_parser("create", help="Create a pull request")
+    pr_create.add_argument("--title", required=True, help="PR title")
+    pr_create.add_argument("--head", required=True, help="Head branch name")
+    pr_create.add_argument("--base", default="main", help="Base branch name")
+    pr_create.add_argument("--body", help="PR description body")
+
+    pr_reviews = pr_subparsers.add_parser("reviews", help="List pull request reviews")
+    pr_reviews.add_argument("pull", type=int, help="Pull request number")
+
+    pr_review = pr_subparsers.add_parser("review", help="Submit a pull request review")
+    pr_review.add_argument("pull", type=int, help="Pull request number")
+    pr_review.add_argument(
+        "--event",
+        required=True,
+        choices=["APPROVED", "REQUEST_CHANGES", "COMMENT"],
+        help="Review event type",
+    )
+    pr_review.add_argument("--body", help="Review comment body")
+
+    pr_merge = pr_subparsers.add_parser("merge", help="Merge a pull request")
+    pr_merge.add_argument("pull", type=int, help="Pull request number")
+    pr_merge.add_argument(
+        "--method",
+        default="merge",
+        choices=["merge", "rebase", "rebase-merge", "squash"],
+        help="Merge strategy",
+    )
+    pr_merge.add_argument("--title", help="Merge commit title")
+    pr_merge.add_argument("--message", help="Merge commit message")
+
     if len(sys.argv) == 1:
         # Self-documenting command tree
         payload = envelope(
@@ -286,6 +555,15 @@ def main():
                         "usage": "gt dep rm <issue_index> <dep_reference>",
                     },
                     {"name": "label add", "description": "Add label to issue", "usage": "gt label add <issue_index> <label_id>"},
+                    {"name": "label rm", "description": "Remove label from issue", "usage": "gt label rm <issue_index> <label_id>"},
+                    {"name": "project list", "description": "List repository project boards", "usage": "gt project list"},
+                    {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
+                    {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
+                    {"name": "pr list", "description": "List pull requests", "usage": "gt pr list [--state open|closed|all]"},
+                    {"name": "pr create", "description": "Create a pull request", "usage": "gt pr create --title \"...\" --head branch --base main [--body \"...\"]"},
+                    {"name": "pr reviews", "description": "List reviews on a pull request", "usage": "gt pr reviews <pr_number>"},
+                    {"name": "pr review", "description": "Submit a pull request review", "usage": "gt pr review <pr_number> --event APPROVED|REQUEST_CHANGES|COMMENT [--body \"...\"]"},
+                    {"name": "pr merge", "description": "Merge a pull request", "usage": "gt pr merge <pr_number> [--method merge|rebase|rebase-merge|squash]"},
                 ]
             },
             next_actions=[
@@ -400,6 +678,146 @@ def main():
                     ]
                 )
                 print(dump_yaml(payload))
+
+        elif args.command == "project":
+            if args.project_action == "list":
+                projects = client.list_projects()
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"projects": projects},
+                    next_actions=[
+                        {"command": "gt project columns <project_id>", "description": "List board columns"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.project_action == "columns":
+                columns = client.list_project_columns(args.project_id)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"project_id": args.project_id, "columns": columns},
+                    next_actions=[
+                        {"command": f"gt project move {args.project_id} 1 --to \"In Progress\"", "description": "Move issue #1 to In Progress"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.project_action == "move":
+                moved = client.move_issue_to_project_column(
+                    args.project_id, args.issue, args.to
+                )
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"message": "Issue moved on project board", **moved},
+                    next_actions=[
+                        {"command": f"gt project columns {args.project_id}", "description": "List project columns"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            else:
+                parser.print_help()
+
+        elif args.command == "pr":
+            if args.pr_action == "list":
+                pulls = client.list_pulls(state=args.state, base=args.base, head=args.head)
+                result_pulls = [
+                    {
+                        "number": p.get("number"),
+                        "state": p.get("state"),
+                        "title": p.get("title"),
+                        "head": (p.get("head") or {}).get("ref"),
+                        "base": (p.get("base") or {}).get("ref"),
+                        "merged": p.get("merged"),
+                        "html_url": p.get("html_url"),
+                    }
+                    for p in pulls
+                ]
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"pulls": result_pulls, "count": len(result_pulls)},
+                    next_actions=[
+                        {"command": "gt pr create --title \"...\" --head feature-branch --base main", "description": "Create a new pull request"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "create":
+                pr = client.create_pull(title=args.title, head=args.head, base=args.base, body=args.body)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "message": "Pull request created",
+                        "number": pr.get("number"),
+                        "url": pr.get("html_url"),
+                        "state": pr.get("state"),
+                    },
+                    next_actions=[
+                        {"command": f"gt pr reviews {pr.get('number')}", "description": "List current reviews"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "reviews":
+                reviews = client.list_pull_reviews(args.pull)
+                result_reviews = [
+                    {
+                        "id": r.get("id"),
+                        "state": r.get("state"),
+                        "submitted_at": r.get("submitted_at"),
+                        "user": (r.get("user") or {}).get("login"),
+                        "body": r.get("body"),
+                    }
+                    for r in reviews
+                ]
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={"pull": args.pull, "reviews": result_reviews, "count": len(result_reviews)},
+                    next_actions=[
+                        {"command": f"gt pr review {args.pull} --event APPROVED --body \"looks good\"", "description": "Approve the pull request"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "review":
+                review = client.submit_pull_review(args.pull, args.event, args.body)
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "message": "Pull request review submitted",
+                        "pull": args.pull,
+                        "review_id": review.get("id"),
+                        "state": review.get("state"),
+                    },
+                    next_actions=[
+                        {"command": f"gt pr reviews {args.pull}", "description": "List current reviews"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            elif args.pr_action == "merge":
+                merged = client.merge_pull(
+                    args.pull,
+                    merge_method=args.method,
+                    commit_title=args.title,
+                    commit_message=args.message,
+                )
+                payload = envelope(
+                    command=full_cmd,
+                    ok=True,
+                    result={
+                        "message": "Pull request merged",
+                        "pull": args.pull,
+                        "sha": merged.get("sha"),
+                        "merged": merged.get("merged", True),
+                    },
+                    next_actions=[
+                        {"command": "gt pr list --state open", "description": "List remaining open pull requests"},
+                    ],
+                )
+                print(dump_yaml(payload))
+            else:
+                parser.print_help()
 
         else:
             parser.print_help()
