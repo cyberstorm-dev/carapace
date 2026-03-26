@@ -28,6 +28,11 @@ class GiteaAPIError(Exception):
         self.reason = reason
 
 
+class GTArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
 class GiteaClient:
     def __init__(self, url: str, token: str, repo: str):
         self.url = url.rstrip("/")
@@ -535,14 +540,14 @@ def normalize_issue_state_target(value: str) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)
+    parser = GTArgumentParser(description="gt: Gitea Tool for Agentic Workflows", add_help=False)
     parser.add_argument("--url")
     parser.add_argument("--token")
     parser.add_argument("--repo")
     parser.add_argument("--remote")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
 
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command", parser_class=GTArgumentParser)
 
     # Issue listing
     list_parser = subparsers.add_parser("list", help="List issues with filters")
@@ -564,10 +569,12 @@ def build_parser() -> argparse.ArgumentParser:
     label_parser.add_argument("label_id", type=int)
 
     issue_parser = subparsers.add_parser("issue", help="Issue operations")
-    issue_subparsers = issue_parser.add_subparsers(dest="issue_action")
+    issue_subparsers = issue_parser.add_subparsers(dest="issue_action", parser_class=GTArgumentParser)
 
     issue_comments = issue_subparsers.add_parser("comments", help="Issue comment operations")
-    issue_comments_subparsers = issue_comments.add_subparsers(dest="issue_comments_action")
+    issue_comments_subparsers = issue_comments.add_subparsers(
+        dest="issue_comments_action", parser_class=GTArgumentParser
+    )
 
     issue_comments_list = issue_comments_subparsers.add_parser(
         "list", help="List comments on an issue"
@@ -596,7 +603,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Project board operations (web-routed in Gitea)
     project_parser = subparsers.add_parser("project", help="Project board operations")
-    project_subparsers = project_parser.add_subparsers(dest="project_action")
+    project_subparsers = project_parser.add_subparsers(
+        dest="project_action", parser_class=GTArgumentParser
+    )
 
     project_subparsers.add_parser("list", help="List repository project boards")
 
@@ -624,7 +633,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Pull request operations
     pr_parser = subparsers.add_parser("pr", help="Pull request operations")
-    pr_subparsers = pr_parser.add_subparsers(dest="pr_action")
+    pr_subparsers = pr_parser.add_subparsers(dest="pr_action", parser_class=GTArgumentParser)
 
     pr_list = pr_subparsers.add_parser("list", help="List pull requests")
     pr_list.add_argument("--state", default="open", choices=["open", "closed", "all"])
@@ -711,6 +720,48 @@ def read_body_from_args(file_path: Optional[str] = None) -> str:
     return body
 
 
+def command_tree() -> List[Dict[str, str]]:
+    return [
+        {"name": "list", "description": "List issues with filtering", "usage": "gt list [--state open|closed|all] [--assignee user] [--labels l1,l2]"},
+        {"name": "dep add", "description": "Add dependency to issue", "usage": "gt dep add <issue_index> <dep_reference>"},
+        {"name": "dep rm", "description": "Remove dependency from issue", "usage": "gt dep rm <issue_index> <dep_reference>"},
+        {"name": "issue comments list", "description": "List comments on an issue", "usage": "gt issue comments list <issue_number>"},
+        {"name": "issue comments upsert-marker", "description": "Create or update a marker comment", "usage": "gt issue comments upsert-marker <issue_number> --marker \"## Codex Workpad\" [--file body.md]"},
+        {"name": "issue assign", "description": "Assign a user to an issue", "usage": "gt issue assign <issue_number> <username>"},
+        {"name": "issue unassign", "description": "Remove assignees from an issue", "usage": "gt issue unassign <issue_number> <username>|--all"},
+        {"name": "issue state", "description": "Move issue through kanban workflow", "usage": "gt issue state <issue_number> --to \"In Progress\""},
+        {"name": "label add", "description": "Add label to issue", "usage": "gt label add <issue_index> <label_id>"},
+        {"name": "label rm", "description": "Remove label from issue", "usage": "gt label rm <issue_index> <label_id>"},
+        {"name": "project list", "description": "List repository project boards", "usage": "gt project list"},
+        {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
+        {"name": "project cards", "description": "List project cards and issue membership", "usage": "gt project cards <project_id> [--issue <issue_number>]"},
+        {"name": "project add", "description": "Add an issue card to a board", "usage": "gt project add <project_id> <issue_number>"},
+        {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
+        {"name": "pr list", "description": "List pull requests", "usage": "gt pr list [--state open|closed|all]"},
+        {"name": "pr create", "description": "Create a pull request", "usage": "gt pr create --title \"...\" --head branch --base main [--body \"...\"]"},
+        {"name": "pr reviews", "description": "List reviews on a pull request", "usage": "gt pr reviews <pr_number>"},
+        {"name": "pr review", "description": "Submit a pull request review", "usage": "gt pr review <pr_number> --event APPROVED|REQUEST_CHANGES|COMMENT [--body \"...\"]"},
+        {"name": "pr request-reviewer", "description": "Request a reviewer on a pull request", "usage": "gt pr request-reviewer <pr_number> <username>"},
+        {"name": "pr close", "description": "Close a pull request without merging", "usage": "gt pr close <pr_number>"},
+        {"name": "pr merge", "description": "Merge a pull request", "usage": "gt pr merge <pr_number> [--method merge|rebase|rebase-merge|squash]"},
+    ]
+
+
+def print_root_help() -> None:
+    payload = envelope(
+        command="gt",
+        ok=True,
+        result={
+            "description": "Gitea Tool for Agentic Workflows",
+            "commands": command_tree(),
+        },
+        next_actions=[
+            {"command": "gt list", "description": "List all open issues"},
+        ],
+    )
+    print(dump_yaml(payload))
+
+
 def _repo_from_remote(remote_cfg: Dict[str, Any]) -> Optional[str]:
     repo = remote_cfg.get("repo")
     if isinstance(repo, str) and "/" in repo:
@@ -778,55 +829,15 @@ def resolve_connection_settings(args: argparse.Namespace, config: Optional[Dict[
 def main():
     parser = build_parser()
 
-    if len(sys.argv) == 1:
-        # Self-documenting command tree
-        payload = envelope(
-            command="gt",
-            ok=True,
-            result={
-                "description": "Gitea Tool for Agentic Workflows",
-                "commands": [
-                    {"name": "list", "description": "List issues with filtering", "usage": "gt list [--state open|closed|all] [--assignee user] [--labels l1,l2]"},
-                    {
-                        "name": "dep add",
-                        "description": "Add dependency to issue",
-                        "usage": "gt dep add <issue_index> <dep_reference>",
-                    },
-                    {
-                        "name": "dep rm",
-                        "description": "Remove dependency from issue",
-                        "usage": "gt dep rm <issue_index> <dep_reference>",
-                    },
-                    {"name": "issue comments list", "description": "List comments on an issue", "usage": "gt issue comments list <issue_number>"},
-                    {"name": "issue comments upsert-marker", "description": "Create or update a marker comment", "usage": "gt issue comments upsert-marker <issue_number> --marker \"## Codex Workpad\" [--file body.md]"},
-                    {"name": "issue assign", "description": "Assign a user to an issue", "usage": "gt issue assign <issue_number> <username>"},
-                    {"name": "issue unassign", "description": "Remove assignees from an issue", "usage": "gt issue unassign <issue_number> <username>|--all"},
-                    {"name": "issue state", "description": "Move issue through kanban workflow", "usage": "gt issue state <issue_number> --to \"In Progress\""},
-                    {"name": "label add", "description": "Add label to issue", "usage": "gt label add <issue_index> <label_id>"},
-                    {"name": "label rm", "description": "Remove label from issue", "usage": "gt label rm <issue_index> <label_id>"},
-                    {"name": "project list", "description": "List repository project boards", "usage": "gt project list"},
-                    {"name": "project columns", "description": "List columns for a project board", "usage": "gt project columns <project_id>"},
-                    {"name": "project cards", "description": "List project cards and issue membership", "usage": "gt project cards <project_id> [--issue <issue_number>]"},
-                    {"name": "project add", "description": "Add an issue card to a board", "usage": "gt project add <project_id> <issue_number>"},
-                    {"name": "project move", "description": "Move issue card to a board column", "usage": "gt project move <project_id> <issue_number> --to \"In Progress\""},
-                    {"name": "pr list", "description": "List pull requests", "usage": "gt pr list [--state open|closed|all]"},
-                    {"name": "pr create", "description": "Create a pull request", "usage": "gt pr create --title \"...\" --head branch --base main [--body \"...\"]"},
-                    {"name": "pr reviews", "description": "List reviews on a pull request", "usage": "gt pr reviews <pr_number>"},
-                    {"name": "pr review", "description": "Submit a pull request review", "usage": "gt pr review <pr_number> --event APPROVED|REQUEST_CHANGES|COMMENT [--body \"...\"]"},
-                    {"name": "pr request-reviewer", "description": "Request a reviewer on a pull request", "usage": "gt pr request-reviewer <pr_number> <username>"},
-                    {"name": "pr close", "description": "Close a pull request without merging", "usage": "gt pr close <pr_number>"},
-                    {"name": "pr merge", "description": "Merge a pull request", "usage": "gt pr merge <pr_number> [--method merge|rebase|rebase-merge|squash]"},
-                ]
-            },
-            next_actions=[
-                {"command": "gt list", "description": "List all open issues"},
-            ]
-        )
-        print(dump_yaml(payload))
+    if len(sys.argv) == 1 or any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print_root_help()
         return
 
-    args = parse_args()
     try:
+        args = parse_args()
+        if args.command is None:
+            print_root_help()
+            return
         validate_args(args)
         settings = resolve_connection_settings(args)
     except ValueError as e:
@@ -834,7 +845,7 @@ def main():
             command="gt",
             ok=False,
             error={"message": str(e)},
-            fix=f"Create or update {os.path.expanduser(args.config)} and set a valid remote.",
+            fix="Use -h/--help for the YAML command tree and check command names/arguments.",
         )
         print(dump_yaml(payload))
         sys.exit(1)
